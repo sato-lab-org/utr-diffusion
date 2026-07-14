@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore', category=FutureWarning, module='torch')
 
 def train():
     #data = load_data(data_path="data/MFE_30k_class_3_[-15, -7.5, 0.0].csv", split_ratio=0.05, label_type="MFE_label")
-    data = load_data(data_path="../../data/MRL_100k_class_3_[4, 6, 8].csv", split_ratio=0.05, label_type="MRL_label")
+    data = load_data(data_path="../../data/HEK293/MRL_100k_class_3_[4, 6, 8].csv", split_ratio=0.05, label_type="MRL_label")
     #data = load_data_without_dummy_label(data_path="data/MRL_MFE_continuous_967k.csv", split_ratio=0.05)
     unet = UNet(
         dim=200, # 200

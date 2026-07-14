@@ -5,7 +5,7 @@ from src.models.repaint.repaint_codon import RePaintSampler
 import torch
 import warnings
 import os
-from src.experiment.exp_codon_pattern import Codon_Patterns
+from src.experiment.exp_codon_pattern import Codon_Patterns, Codon_Patterns_Refined
 from src.models.repaint.utils import bulid_gt_and_mask_from_codons, write_fasta
 
 warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
@@ -49,12 +49,13 @@ def sample(checkpoint_path):
         gt, mask = bulid_gt_and_mask_from_codons(codon_list=pattern['codon'] , pos_list=pattern['pos'])
         result = repaint.p_resample(gt=gt, mask=mask)
 
-        save_path = 'repaint_save/' + checkpoint_path.split('/')[-1].replace('.pt', '')
+        save_path = 'repaint_save/' + checkpoint_path.split('/')[-3] + '_at_' + checkpoint_path.split('/')[-1].replace('.pt', '')
         os.makedirs(save_path, exist_ok=True)
         save_name = os.path.join(save_path, 'pattern_' + pattern['name'])
         torch.save(result,  save_name + '.pt')
         write_fasta(result['samples'], save_name + '.fasta', num_class=3, batch_bs=100)
 
+
 if __name__ == "__main__":
-    checkpoint_path = '../../checkpoints/MFE_100k_class_3_[-15, -10, -5]_ep_2k_ts_200_beta_0.01_con_1_uncon_0.2_drop_0.2_at_2000epoch.pt'
+    checkpoint_path = '../../outputs/MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4/checkpoints/epoch_2000.pt'
     sample(checkpoint_path)

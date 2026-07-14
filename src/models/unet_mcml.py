@@ -1,9 +1,15 @@
+import itertools
+from cProfile import label
 from functools import partial
+from typing import Optional
 import torch
 from memory_efficient_attention_pytorch import Attention as EfficientAttention
+from tensorflow.python.layers.core import dropout
 from src.models.layers import *
+from src.models.label_emb_strategies import build_label_encoder
+import torch.nn as nn
 
-class UNet_Continuous_Multi_Labels(nn.Module):
+class UNet_Masked_Continuous_Multi_Labels(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -15,11 +21,11 @@ class UNet_Continuous_Multi_Labels(nn.Module):
         num_label: int = 2,
         seq_len: int = 200,
         output_attention: bool = False,
-        dropout: float = 0.0
+        dropout: float = 0.0,
+        label_emb_mode: str = 'concat'
     ) -> None:
         super().__init__()
         self.seq_len = seq_len
-        self.dim = dim
         self.dropout_rate = dropout
         self.num_label = num_label
 
@@ -36,8 +42,8 @@ class UNet_Continuous_Multi_Labels(nn.Module):
         in_out = list(zip(dims[:-1], dims[1:]))
         block_klass = partial(ResnetBlock, groups=resnet_block_groups, dropout=self.dropout_rate)
 
-        # time embeddings
-        time_dim = seq_len * 4
+        # time embeddings， since auther used memory_attn， query and key must be same dim
+        time_dim = 4 * seq_len
 
         sinu_pos_emb = LearnedSinusoidalPosEmb(learned_sinusoidal_dim)
         fourier_dim = learned_sinusoidal_dim + 1
@@ -49,13 +55,12 @@ class UNet_Continuous_Multi_Labels(nn.Module):
             nn.Linear(time_dim, time_dim),
         )
 
-        self.class_emb = nn.Sequential(
-            nn.Linear(num_label, time_dim),
-            nn.SiLU(),
-            nn.Linear(time_dim, time_dim),
+        self.label_emb_mode = label_emb_mode
+        self.class_emb = build_label_encoder(
+            label_emb_mode = self.label_emb_mode,
+            num_label = num_label,
+            emb_dim = time_dim
         )
-
-        self.null_emb = nn.Parameter(torch.randn(time_dim))
 
         # layers
         self.downs = nn.ModuleList([])
@@ -88,7 +93,7 @@ class UNet_Continuous_Multi_Labels(nn.Module):
                         block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
                         block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
                         Residual(PreNorm(dim_out, LinearAttention(dim_out))),
-                        Upsample(dim_out, dim_in, ind==0) if not is_last else nn.Conv2d(dim_out, dim_in, 3, padding=1),
+                        Upsample(dim_out, dim_in, ind==0, w_scale=2) if not is_last else nn.Conv2d(dim_out, dim_in, 3, padding=1),
                     ]
                 )
             )
@@ -105,7 +110,7 @@ class UNet_Continuous_Multi_Labels(nn.Module):
         )
         self.norm_to_cross = nn.LayerNorm(self.seq_len*4) # when 200bp, dim * 4
 
-    def forward(self, x: torch.Tensor, time: torch.Tensor = None, classes: torch.Tensor = None, context_mask = None):
+    def forward(self, x: torch.Tensor, time: torch.Tensor = None, classes: torch.Tensor = None, label_is_presence = None):
 
         x = self.init_conv(x)
         r = x.clone()
@@ -116,14 +121,7 @@ class UNet_Continuous_Multi_Labels(nn.Module):
         t_cross = t_start.clone()
 
         if classes is not None:
-            cond_emb = self.class_emb(classes)
-            uncond_emb = self.null_emb.expand(classes.shape[0], -1)
-            context_bool = context_mask.bool().unsqueeze(1) if self.num_label == 1 else context_mask[:, 0].bool().unsqueeze(1) # [B] or [B, 2]-> [B, 1]
-            class_emb = torch.where(
-                context_bool,
-                cond_emb,  # if mask=True → 用 null_emb
-                uncond_emb  # if mask=False → 保留原 embedding
-            )
+            class_emb = self.class_emb(classes, label_is_presence)
 
             t_start += class_emb
             t_mid += class_emb

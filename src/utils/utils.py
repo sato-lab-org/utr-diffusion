@@ -9,7 +9,6 @@ from torch import nn
 from pathlib import Path
 import shutil
 
-
 def exists(x):
     return x is not None
 
@@ -209,9 +208,6 @@ def collect_fasta_from_subdirs(target_dir):
         print(f"Moved {fasta_path.name} -> {new_fasta_path.name}")
 
 
-
-
-
 def rename_fasta_cond_to_condition_weight(
         target_dir,
         old="cond",
@@ -242,3 +238,4 @@ def rename_fasta_cond_to_condition_weight(
         else:
             fasta.rename(new_path)
             print(f"Renamed: {fasta.name} -> {new_name}")
+

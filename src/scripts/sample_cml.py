@@ -1,4 +1,4 @@
-from src.experiment.exp_target_labels import joint_target_values_sweep, CML_Crest_request
+from src.experiment.exp_target_labels import joint_target_values_sweep, joint_target_values_3x3, CML_Crest_request
 from accelerate import Accelerator
 from src.models.diffusion_cml import Diffusion_Continuous_Multi_Labels as Diffusion_CML
 from src.models.unet_cml import UNet_Continuous_Multi_Labels as UNet_CML
@@ -23,14 +23,14 @@ def sample_continuous_multi_label():
         model=unet,
         timestep=200,
         beta_last=0.01,
-        condition_weight=1,
+        condition_weight=4,
         uncondition_prop=0.2,
     )
-    accelerator = Accelerator()
+    accelerator = Accelerator(mixed_precision='fp16')
     
-    tgt_values = joint_target_values_sweep
-    model_save_name = "save/MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_2000epoch_sample_sweep"
-    checkpoint_path = ("checkpoints/MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_2000epoch.pt")
+    tgt_values = joint_target_values_3x3 #joint_target_values_sweep
+    model_save_name = "outputs/real_MRL_pred_MFE_601k"
+    checkpoint_path = model_save_name + '/checkpoints/epoch_2000.pt'
     TrainLoop(
         data={},
         model=diffusion,
@@ -44,9 +44,8 @@ def sample_continuous_multi_label():
         batch_size=5200,
         num_workers = 16,
         learning_rate=1e-4,
-        do_gumbel_softmax=False,
         tgt_values = tgt_values
-    ).load_checkpoint_then_do_sample(checkpoint_path)
+    ).load_checkpoint_then_do_sample(checkpoint_path, trial_name='cond_4')
 
 if __name__ == "__main__":
     sample_continuous_multi_label()

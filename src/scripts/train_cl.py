@@ -12,7 +12,7 @@ warnings.filterwarnings('ignore', category=FutureWarning, module='torch')
 
 
 def train_continuous_label():
-    data = load_data_continues(data_path="../../data/MRL_MFE_continuous_967k.csv", split_ratio=0.05, label="MFE")
+    data = load_data_continues(data_path="../../data/HEK293/MRL_MFE_continuous_967k.csv", split_ratio=0.05, label="MFE")
 
     unet = UNet_CL(
         dim=200, # 200

@@ -28,7 +28,7 @@ def sample():
 
     accelerator = Accelerator()
     model_save_name = "N_20k_class_3_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4"
-    checkpoint_path = "../../checkpoints/epoch_2000_20k_class_3_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4.pt"
+    checkpoint_path = "../../checkpoints/20k_class_3_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_epoch_2000.pt"
 
     TrainLoop(
         data={},

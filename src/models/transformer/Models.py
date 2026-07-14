@@ -174,7 +174,7 @@ class Transformer(nn.Module):
 
         assert d_model == d_word_vec, \
         'To facilitate the residual connections, \
-         the dimensions of all module outputs shall be the same.'
+         the dimensions of all module design_outputs shall be the same.'
 
         if trg_emb_prj_weight_sharing:
             # Share the weight between target word embedding & last dense layer

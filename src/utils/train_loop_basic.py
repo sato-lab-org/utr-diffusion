@@ -1,8 +1,12 @@
+import os
 import copy
 import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
 from src.utils.utils import EMA
+from src.data.dataloader import SequenceDataset
+from torch.utils.data import DataLoader
+from src.utils.utils import write_to_fasta
 
 
 class BasicTrainLoop():
@@ -20,6 +24,7 @@ class BasicTrainLoop():
                  num_workers: int = 4,
                  learning_rate: float = 1e-3,
                  num_classes: int = 3,
+                 seq_len:int = 50,
                  ):
         # Model, Optimizer and Accelerator
         self.model = model
@@ -45,6 +50,19 @@ class BasicTrainLoop():
         self.ema = EMA(0.995)
         self.ema_model = copy.deepcopy(self.model).eval().requires_grad_(False)
         self.ema_checkpoint_load = False
+
+
+    def _prepare_data_loader(self, data):
+        if data != {}:  # case "data={}" for sample only
+            seq_train = SequenceDataset(seqs=data["Train"], c=data['Train_label'])
+            seq_valid = SequenceDataset(seqs=data["Valid"], c=data['Valid_label'])
+            train_dl = DataLoader(seq_train, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers, pin_memory=True)
+            valid_dl = DataLoader(seq_valid, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers, pin_memory=False)
+            return train_dl, valid_dl
+        else:
+            print('Training data not provided, running in sampling mode!!')
+            return None, None
+
 
     def log_update(self, mode, epoch: int = 0):
         # always unwrap model for safe access
@@ -97,10 +115,14 @@ class BasicTrainLoop():
             "epoch": epoch,
             "ema_model": self.accelerator.get_state_dict(self.ema_model) if multi_gpu_enabled else None
         }
-        torch.save(checkpoint_dict,f"checkpoints/{self.save_name}_at_{epoch}epoch.pt",)
+        save_dir = f"{self.save_name}/checkpoints"
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = f"{save_dir}/epoch_{epoch}.pt"
+        torch.save(checkpoint_dict, save_path)
+        print(f'[Succeed] Model Checkpoint saved to {save_path}!')
 
 
-    def load_checkpoint(self, path, multi_gpu_enabled=False):
+    def load_checkpoint(self, path):
         checkpoint_dict = torch.load(path)
         self.model.load_state_dict(checkpoint_dict["model"])
         self.optimizer.load_state_dict(checkpoint_dict["optimizer"])
@@ -110,6 +132,8 @@ class BasicTrainLoop():
             self.ema_checkpoint_load = True
         else:
             self.ema_checkpoint_load = False
+        print(f'[Succeed] Model Checkpoint loaded from {path}!')
+
 
     def _calculate_reconstruction_loss(self, x, label):
         self.rec_count += 1
@@ -121,3 +145,7 @@ class BasicTrainLoop():
                 x_0 = x_T_to_0[-1]
             self.rec_count = 0
             self.recon_loss = F.mse_loss(x, x_0, reduction='mean').item()
+
+    def _save_fasta(self, sequences, folder_name:str= 'snapshots', epoch:int =None, trial_name:str=None):
+            print('Saving fasta file...')
+            write_to_fasta(sequences, folder_name=os.path.join(self.save_name, folder_name), epoch=epoch, trial_name=trial_name)

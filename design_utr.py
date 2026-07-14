@@ -13,7 +13,7 @@ def build_parser():
     p = argparse.ArgumentParser(
         description="Design UTR with target MRL/MFE under codon/amino constraints (RePaint sampling)."
     )
-    p.add_argument("--checkpoint", type=str, default='checkpoints/MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_2000epoch.pt', help="Path to checkpoint .pt")
+    p.add_argument("--checkpoint", type=str, default='checkpoints/MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_epoch_2000.pt', help="Path to checkpoint .pt")
     p.add_argument("--mode", choices=["codon", "amino"], required=True, help="Constraint type")
     p.add_argument(
         "--targets",
@@ -33,7 +33,7 @@ def build_parser():
         default=None,
         help="Amino constraints as 'pos:AA'. Example: --amino 2:M 5:F ...",
     )
-    p.add_argument("--out", type=str, default='outputs/amino_demo.fasta', help="Output fasta path")
+    p.add_argument("--out", type=str, default='design_outputs/amino_demo.fasta', help="Output fasta path")
     # Sampling hyperparams
     p.add_argument("--batch-size", type=int, default=100)
     p.add_argument("--cond-weight", type=float, default=2.0)

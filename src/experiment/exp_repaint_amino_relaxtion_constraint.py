@@ -78,5 +78,5 @@ def sample(checkpoint_path):
             torch.cuda.empty_cache()
 
 if __name__ == "__main__":
-    checkpoint_path = os.path.join(ROOT, "checkpoints", "MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_2000epoch.pt")
+    checkpoint_path = os.path.join(ROOT, "checkpoints", "MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_epoch_2000.pt")
     sample(checkpoint_path)

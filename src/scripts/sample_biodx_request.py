@@ -31,7 +31,7 @@ def sample_continuous_multi_label():
     # Crest BioDX team work Request
     tgt_values = CML_Crest_request
     model_save_name = "MRL_MFE_260k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_sample_CREST_Request"
-    checkpoint_path = ("checkpoints/MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_2000epoch.pt")
+    checkpoint_path = ("checkpoints/MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_epoch_2000.pt")
     TrainLoop(
         data={},
         model=diffusion,

@@ -150,5 +150,5 @@ def experiment3(checkpoint_path):
         write_fasta(samples, save_name + '.fasta', num_class=3, batch_bs=100)
 
 if __name__ == "__main__":
-    checkpoint_path = 'checkpoints/epoch_2000_20k_class_3_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4.pt'
+    checkpoint_path = 'checkpoints/20k_class_3_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_epoch_2000.pt'
     experiments(checkpoint_path)

@@ -79,7 +79,7 @@ def train_with_optuna(trial, params, data):
     return valid_loss
 
 if __name__ == "__main__":
-    dataset = load_data(saved_data_path="../../data/MRL_10k_class_5_[4-8].csv", classes=5, split_ratio=0.05)
+    dataset = load_data(saved_data_path="../../data/HEK293/MRL_10k_class_5_[4-8].csv", classes=5, split_ratio=0.05)
     fix_params = load_cfg('../config/HPO_timesteps.yaml')
     search_space = {'time_steps': [500,1000]}
     sampler = optuna.samplers.GridSampler(search_space)

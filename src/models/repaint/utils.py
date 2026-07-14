@@ -19,11 +19,7 @@ import yaml
 import os
 from PIL import Image
 import random
-
-from markdown_it.rules_inline import image
-from scipy.signal import wiener
-
-from .amino_codon_table import get_codons_for_amino, get_amino_for_codon
+from .amino_codon_table import get_codons_for_amino, get_amino_for_codon, rna_to_dna
 import numpy as np
 import torch
 
@@ -73,7 +69,7 @@ def get_mask(length, pos):
     mask[:, pos : pos + length] = 1.0
     return mask.unsqueeze(0) # add channel dim
 
-def get_amino_images_for_alter_codons(tgt_aminos, with_padding=True):
+def aminos_to_amino_images(tgt_aminos, with_padding=True):
     # amino_images [num_amino, num_codons_per_amino, 4, 3]
     # N: The number of specified amino acid
     # num_codons_per_amino: 1 amino -> 2~6 codons, here we change it to 1 amino -> 6 codons using 'NNN' padding
@@ -88,6 +84,12 @@ def get_amino_images_for_alter_codons(tgt_aminos, with_padding=True):
         amino_image = torch.stack(amino_image, dim=0)
         all_amino_images.append(amino_image)
     return torch.stack(all_amino_images, dim=0)
+
+
+def amino_images_to_aminos(amino_images: torch.Tensor) -> str:
+    """
+    reverse of aminos_to_amino_images, but we only return the most likely amino acid for each position, without considering the codon degeneracy
+    """
 
 
 def prepare_amino_context(amino_pattern:dict):
@@ -110,7 +112,7 @@ def bulid_gt_and_mask_from_codons(codon_list: list[str], pos_list: list[int], to
         seq[pos : pos + codon_length] = list(codon)
         mask[:, pos : pos + codon_length] = 1.0
         prev_pos = pos
-    seq = ''.join(seq)
+    seq = rna_to_dna(''.join(seq))
     image = torch.tensor([base2vec.get(base) for base in seq], dtype=torch.float).T # [50, 4] -> [4, 50]
     return image.unsqueeze(0), mask.unsqueeze(0) # add channel dim
 
@@ -148,6 +150,98 @@ def build_gt_mask_from_aminos(amino_list: list[str], pos_list: list[int], total_
     return image.unsqueeze(0), mask.unsqueeze(0)
 
 
+def build_codon_usage_table_for_specific_CAI(
+        amino_to_codons,
+        codon_usage_table,
+        target_cai: float,
+        max_num_codons: int = 6,
+):
+    """
+    Return:
+        cai_prob_table: dict
+            aa -> torch.Tensor [6]
+    """
+
+    cai_prob_table = {}
+
+    for aa, codons in amino_to_codons.items():
+
+        if aa == '*':
+            continue
+
+        usage = torch.tensor(
+            [codon_usage_table[aa][codon] for codon in codons],
+            dtype=torch.float32
+        )
+
+        q = usage / usage.sum()
+
+        # CAI relative adaptiveness
+        w = usage / usage.max()
+
+        lambda_value, clipped_target_cai = calculate_lambda_for_target_cai(
+            q=q,
+            w=w,
+            target_cai=target_cai
+        )
+
+        numerator = q * torch.exp(lambda_value * w)
+        p = numerator / numerator.sum()
+
+        logits = torch.log(q + 1e-12) + lambda_value * w
+        p = torch.softmax(logits, dim=0)
+
+        padded_p = torch.zeros(max_num_codons, dtype=torch.float32)
+        padded_p[:len(codons)] = p
+
+        cai_prob_table[aa] = padded_p
+
+    return cai_prob_table
+
+
+def calculate_lambda_for_target_cai(q, w, target_cai, max_iter=100, tol=1e-6):
+    """
+    q: codon usage frequency, [K]
+    w: relative adaptiveness / CAI value, [K]
+    target_cai: desired expected CAI for this amino acid
+
+    p_i = q_i * exp(lambda * w_i) / sum_j q_j * exp(lambda * w_j)
+    """
+
+    q = torch.as_tensor(q, dtype=torch.float32)
+    w = torch.as_tensor(w, dtype=torch.float32)
+
+    target_cai = float(target_cai)
+
+    min_w = float(w.min())
+    max_w = float(w.max())
+
+    # clip target CAI to feasible range for this amino acid
+    if target_cai < min_w:
+        target_cai = min_w
+
+    if target_cai > max_w:
+        target_cai = max_w
+
+    left, right = -50.0, 50.0
+
+    for _ in range(max_iter):
+        mid = (left + right) / 2.0
+
+        numerator = q * torch.exp(mid * w)
+        p = numerator / numerator.sum()
+
+        expected_cai = torch.sum(p * w).item()
+
+        if abs(expected_cai - target_cai) < tol:
+            return mid, target_cai
+
+        if expected_cai < target_cai:
+            left = mid
+        else:
+            right = mid
+
+    return (left + right) / 2.0, target_cai
 
 def write_fasta(matrices, save_path, num_class: int = 3, tgt_values=None, batch_bs: int = 100):
     lines = []

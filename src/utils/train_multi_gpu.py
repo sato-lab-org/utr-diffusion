@@ -13,34 +13,36 @@ from .train_loop_basic import BasicTrainLoop
 
 class TrainLoop_multi_gpu(BasicTrainLoop):
     def __init__(
-            self,
-            data: dict[str, Any],
-            model: torch.nn.Module,
-            accelerator: Accelerator,
-            start_epoch: int = 1,
-            end_epoch: int = 10000,
-            log_step: int = 50,
-            valid_epoch: int = 5,
-            sample_epoch: int = 500,
-            save_epoch: int = 500,
-            save_name: str = '',
-            batch_size: int = 960,
-            num_workers: int = 4,
-            learning_rate: float = 1e-3,
-            tgt_values=None,  # if None discrete else continuous
-            with_condition=True,
+        self,
+        data: dict[str, Any],
+        model: torch.nn.Module,
+        accelerator: Accelerator,
+        start_epoch: int = 1,
+        end_epoch: int = 10000,
+        log_step: int = 50,
+        valid_epoch: int = 5,
+        sample_epoch: int = 500,
+        save_epoch: int = 500,
+        save_name: str = '',
+        batch_size: int = 960,
+        num_workers: int = 4,
+        learning_rate: float = 1e-3,
+        label_names=None,
+        tgt_values=None,  # if None discrete else continuous
+        seq_len: int = 50,
     ):
         super().__init__(model=model, accelerator=accelerator, start_epoch=start_epoch, end_epoch=end_epoch, log_step=log_step,
                          valid_epoch=valid_epoch, sample_epoch=sample_epoch, save_epoch=save_epoch, save_name=save_name,
                          batch_size=batch_size, num_workers=num_workers, learning_rate=learning_rate,
-                         num_classes=data['Classes'] if 'Classes' in data else 3)
+                         num_classes=data['Classes'] if 'Classes' in data else 0)
 
         # some setting params
+        self.label_names = label_names
         self.tgt_values = tgt_values
-        self.with_condition = with_condition
+        self.seq_len = seq_len
 
         # Dataloader and Learning schedule
-        self.train_dl, self.valid_dl = self._prepare_data_loader(data, batch_size, num_workers)
+        self.train_dl, self.valid_dl = self._prepare_data_loader(data)
         self.schedule = lr_schedule(
             optimizer=self.optimizer,
             num_training_steps=len(self.train_dl) * self.end_epoch if self.train_dl is not None else 1,
@@ -49,25 +51,12 @@ class TrainLoop_multi_gpu(BasicTrainLoop):
         )
 
 
-    def _prepare_data_loader(self, data, batch_size, num_workers):
-        if data != {}:  # case "data={}" for sample only
-            seq_train = SequenceDataset(seqs=data["Train"], c=data['Train_label'])
-            seq_valid = SequenceDataset(seqs=data["Valid"], c=data['Valid_label'])
-            train_dl = DataLoader(seq_train, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-            valid_dl = DataLoader(seq_valid, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=False)
-            return train_dl, valid_dl
-        else:
-            print('Training data not provided, running in sampling mode!!')
-            return None, None
-
-
     def train_loop(self):
         # Multi-GPU prepare Model, Optimizer and Accelerator
         self.model, self.optimizer, self.train_dl, self.valid_dl, self.schedule = self.accelerator.prepare(
             self.model, self.optimizer, self.train_dl, self.valid_dl, self.schedule)
 
         self.log_update(mode='init')
-
         for epoch in tqdm(range(self.start_epoch, self.end_epoch + 1), disable=not self.accelerator.is_main_process):
             # training
             self.train(epoch=epoch)
@@ -93,7 +82,6 @@ class TrainLoop_multi_gpu(BasicTrainLoop):
         for step, batch in enumerate(self.train_dl):
             x, y = batch
             with self.accelerator.autocast():  # Mixed precision on 混合精度オンにする
-                y = y if self.with_condition else None
                 loss = self.model(x, y)
 
             self.optimizer.zero_grad(set_to_none=True)
@@ -122,7 +110,6 @@ class TrainLoop_multi_gpu(BasicTrainLoop):
             with self.accelerator.autocast():
                 for batch in self.valid_dl:
                     x, y = batch
-                    y = y if self.with_condition else None
                     loss = self.model(x, y)
                     total_loss += loss.detach()
 
@@ -135,7 +122,7 @@ class TrainLoop_multi_gpu(BasicTrainLoop):
             self.log_update(mode='valid', epoch=epoch)
 
 
-    def sample(self, epoch, write_fasta=True):
+    def sample(self, epoch):
         # use EMA model
         device = self.accelerator.device
         model_for_sampling = self.accelerator.unwrap_model(self.ema_model)
@@ -145,24 +132,23 @@ class TrainLoop_multi_gpu(BasicTrainLoop):
         sample_fn = partial(
             inference,
             diffusion_model=model_for_sampling,
+            seq_len=self.seq_len,
             class_num=self.num_classes,
             cond_weight=getattr(model_for_sampling, "cond_weight", 0.0),
+            label_names=self.label_names,
             target_values=self.tgt_values,
             device=device,
-            with_condition=self.with_condition,
         )
 
         with torch.no_grad():
             with self.accelerator.autocast():
                 print("\nGenerating synthetic sequences...")
-                if epoch == self.end_epoch:
+                if epoch == self.end_epoch and self.is_save_process:
                     seqs, all_images = sample_fn(output_all_steps=True)
                     torch.save({k: v.cpu().numpy() for k, v in all_images.items()},
-                               os.path.join('save', self.save_name, "all_images_denoising_process.pt"))
+                               os.path.join('outputs', self.save_name, 'snapshots', "all_images_denoising_process.pt"))
                     print("all_images_denoising_process.pt saved!")
                 else:
                     seqs = sample_fn()
 
-            if write_fasta:
-                print('Saving fasta file...')
-                write_to_fasta(sequences=seqs, folder_name=os.path.join('save', self.save_name), epoch=epoch)
+            self._save_fasta(sequences=seqs, epoch=epoch)

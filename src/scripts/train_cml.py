@@ -2,17 +2,20 @@ from accelerate import Accelerator
 from src.data.dataloader_diy_data import load_data_continues_MRL_MFE_double_label
 from src.models.diffusion_cml import Diffusion_Continuous_Multi_Labels as Diffusion_CML
 from src.models.unet_cml import UNet_Continuous_Multi_Labels as UNet_CML
-#from src.utils.train_single_gpu import TrainLoop_single_gpu as TrainLoop
-from src.utils.train_multi_gpu import TrainLoop_multi_gpu as TrainLoop
-from src.experiment.exp_target_labels import target_joint_labels_3x3
+from src.utils.train_single_gpu import TrainLoop_single_gpu as TrainLoop
+#from src.utils.train_multi_gpu import TrainLoop_multi_gpu as TrainLoop
+from src.experiment.exp_target_labels import joint_target_values_3x3
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
 warnings.filterwarnings('ignore', category=FutureWarning, module='torch')
 
-
+LR = 1e-4
+uncondition_prop = 0.2
 def train_continuous_multi_label():
-    data = load_data_continues_MRL_MFE_double_label(data_path="../../data/MRL_MFE_continuous_967k.csv", split_ratio=0.05)
+    label_cols = ['real_MRL', 'pred_MFE'] #real_MRL, pred_MFE
+    #label_cols = ['MRL', 'MFE']
+    data = load_data_continues_MRL_MFE_double_label(data_path="data/HEK293/real_MRL_pred_MFE_260k.csv", label_cols=label_cols, split_ratio=0.05)
 
     unet = UNet_CML(
         dim=200, # 200
@@ -21,7 +24,7 @@ def train_continuous_multi_label():
         resnet_block_groups=4, # 4
         seq_len = 50,
         dropout = 0.2,
-        num_label = 2,
+        num_label = len(label_cols),
     )
 
 
@@ -30,15 +33,17 @@ def train_continuous_multi_label():
         timestep=200,
         beta_last=0.01,
         condition_weight=1,
-        uncondition_prop=0.2,
+        uncondition_prop=uncondition_prop,
     )
 
     accelerator = Accelerator(log_with=["wandb"], mixed_precision='fp16')
-    model_save_name = "MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4"
+    model_save_name = "outputs/real_MRL_pred_MFE_260k"# MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_trial2
+    notes = f"ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4"
     accelerator.init_trackers(
         project_name="dnadiffusion_c_m",
-        init_kwargs={"wandb": {"notes": model_save_name}},
+        init_kwargs={"wandb": {"name": model_save_name, "notes": notes, "tags": label_cols}},
     )
+
 
     TrainLoop(
         data=data,
@@ -51,9 +56,10 @@ def train_continuous_multi_label():
         save_epoch=2000,
         save_name=model_save_name,
         batch_size=6000,
+        label_names=['MRL', 'MFE'],
         num_workers = 24,
-        learning_rate=1e-4,
-        tgt_values = target_joint_labels_3x3,
+        learning_rate=LR,
+        tgt_values = joint_target_values_3x3,
     ).train_loop()
 
 if __name__ == "__main__":
