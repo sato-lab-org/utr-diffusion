@@ -57,3 +57,7 @@ design_utr/
 .tsubame/state/
 .tsubame/logs/
 .idea/tsubame-private/
+
+# --- Known TSUBAME-only generated artifacts ---
+evaluation/rna.ps
+save_checkpoints_backup.tar.gz
