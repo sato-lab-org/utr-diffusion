@@ -23,6 +23,8 @@ conda_env/
 
 # --- Data & experiment artifacts (大文件) ---
 data/
+datasets/
+outputs/
 checkpoints/
 runs/
 logs/
@@ -49,3 +51,9 @@ src_backup_*/
 Thumbs.db
 *.safetensors
 design_utr/
+
+# --- Local TSUBAME control state ---
+.tsubame.json
+.tsubame/state/
+.tsubame/logs/
+.idea/tsubame-private/
