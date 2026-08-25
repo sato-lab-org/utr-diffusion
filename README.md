@@ -1,17 +1,21 @@
 # UTR-Diffusion
 
-Official implementation of the paper:
+Official implementation accompanying the manuscript:
 
-> **UTR-Diffusion: Conditional Diffusion Modeling for Multi-objective and Constrained UTR Design**  
-> ECCB 2026 Proceedings
+> **UTR-Diffusion: Conditional Diffusion Modeling for Multi-objective and Constrained UTR Design**
 
-UTR-Diffusion is a diffusion-based generative framework for 5′ UTR sequence design that enables:
+UTR-Diffusion is a conditional diffusion framework for controllable 5′ UTR and 5′ UTR–CDS junction sequence generation. The framework supports:
 
-- **Continuous control of translation-related indicators**
-  - Mean Ribosome Load (MRL)
-  - Minimum Free Energy (MFE)
-- **Explicit codon- or amino-acid constraints** at user-specified positions
-- **Multi-objective conditional generation**
+* **Continuous control of translation- and structure-related indicators**
+
+  * Mean Ribosome Load (MRL)
+  * Minimum Free Energy (MFE)
+* **Multi-objective conditional generation** with joint MRL and MFE targets
+* **Position-specific codon constraints** at user-defined sequence positions
+* **Position-specific amino-acid constraints** while retaining synonymous codon flexibility
+* **Codon-adaptiveness-controlled generation** for regulating codon usage under coding constraints
+
+> **Note:** Implementation support for codon-adaptiveness control is being finalized and will be added in a forthcoming repository update.
 
 ---
 
