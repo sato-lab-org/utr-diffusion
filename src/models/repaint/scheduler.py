@@ -14,6 +14,67 @@
 #
 # This repository was forked from https://github.com/openai/guided-diffusion, which is under the MIT license
 
+from collections.abc import Mapping
+
+
+# Keep the sampler defaults in one place.  The lower-case names are retained for
+# compatibility with experiment scripts that imported them directly.
+DEFAULT_REPAINT_SCHEDULE = {
+    'jump_length': 10,
+    'jump_n_sample': 10,
+    'n_sample': 1,
+    't_T': 200,
+}
+
+DEFAULT_NO_JUMP_SCHEDULE = {
+    'jump_length': 10,
+    'jump_n_sample': 0,
+    'n_sample': 1,
+    't_T': 200,
+}
+
+schedule_jump_params = dict(DEFAULT_REPAINT_SCHEDULE)
+schedule_no_jump_params = dict(DEFAULT_NO_JUMP_SCHEDULE)
+
+
+def resolve_schedule(schedule=None, *, no_jump=False, max_timestep=None):
+    """Return a validated copy of the default RePaint schedule.
+
+    ``schedule`` may contain a partial override.  Returning a new dictionary
+    prevents one sampler from accidentally mutating the defaults used by
+    another sampler.
+    """
+
+    if schedule is not None and not isinstance(schedule, Mapping):
+        raise TypeError("schedule must be a mapping or None")
+
+    params = dict(DEFAULT_NO_JUMP_SCHEDULE if no_jump else DEFAULT_REPAINT_SCHEDULE)
+    if schedule is not None:
+        params.update(schedule)
+
+    for name in ('t_T', 'n_sample', 'jump_length', 'jump_n_sample'):
+        value = params[name]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"schedule parameter {name!r} must be an integer")
+
+    if params['t_T'] < 1:
+        raise ValueError("schedule parameter 't_T' must be at least 1")
+    if params['n_sample'] < 1:
+        raise ValueError("schedule parameter 'n_sample' must be at least 1")
+    if params['jump_length'] < 1:
+        raise ValueError("schedule parameter 'jump_length' must be at least 1")
+    if params['jump_n_sample'] < 0:
+        raise ValueError("schedule parameter 'jump_n_sample' cannot be negative")
+    if max_timestep is not None:
+        if isinstance(max_timestep, bool) or not isinstance(max_timestep, int):
+            raise TypeError("max_timestep must be an integer or None")
+        if params['t_T'] > max_timestep:
+            raise ValueError(
+                f"schedule t_T={params['t_T']} exceeds diffusion timestep={max_timestep}"
+            )
+
+    return params
+
 def get_schedule(t_T, t_0, n_sample, n_steplength, debug=0):
     if n_steplength > 1:
         if not n_sample > 1:

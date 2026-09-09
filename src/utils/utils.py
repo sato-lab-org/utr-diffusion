@@ -168,9 +168,12 @@ def get_warmup_flatten_cosine_schedule(optimizer, num_training_steps, warmup_rat
     return LambdaLR(optimizer, lr_lambda, last_epoch=-1)
 
 
-def write_to_fasta(sequences, folder_name, epoch, trial_name=None):
+def write_to_fasta(sequences, folder_name, epoch=None, trial_name=None):
     os.makedirs(folder_name, exist_ok=True)
-    filename = f'{trial_name}_epoch_{epoch}.fasta' if trial_name is not None else f'epoch_{epoch}.fasta'
+    if epoch is not None:
+        filename = f'{trial_name}_epoch_{epoch}.fasta' if trial_name is not None else f'epoch_{epoch}.fasta'
+    else:
+        filename = f'{trial_name}.fasta' if trial_name is not None else 'sample.fasta'
     with open(os.path.join(folder_name, filename), 'w') as f:
         for seq in sequences:
             f.write(seq)

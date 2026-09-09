@@ -1,3 +1,9 @@
+import math
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import numpy as np
@@ -40,6 +46,107 @@ AMINO_TO_CODONS = {
 
 def dna_to_rna(seq: str) -> str:
     return seq.replace('T', 'U')
+
+
+def _derived_plot_path(output_path, suffix):
+    path = Path(output_path)
+    return str(path.with_name(f"{path.stem}{suffix}"))
+
+
+def _amino_codon_counts_with_invalid(seqs, amino, position):
+    codons = AMINO_TO_CODONS[amino]
+    counts = [sum(1 for seq in seqs if seq[position:position + 3] == codon) for codon in codons]
+    invalid_count = len(seqs) - sum(counts)
+    labels = list(codons)
+    if invalid_count:
+        labels.append("Invalid")
+        counts.append(invalid_count)
+    return labels, counts, invalid_count
+
+
+def _expanded_axis_limits(values, baseline):
+    finite_values = [float(value) for value in values if np.isfinite(float(value))]
+    lower = min([float(baseline[0]), *finite_values])
+    upper = max([float(baseline[1]), *finite_values])
+    span = upper - lower
+    padding = 0.03 * span if span > 0 else 1.0
+    return lower - padding, upper + padding
+
+
+def _normalise_target_pairs(args):
+    """Return conditioning targets as ``[MRL, MFE]`` pairs.
+
+    Missing labels are represented by NaN so the plotting layer mirrors the
+    masked-label representation used by MCML. ``--targets`` is the advanced
+    batch interface, while explicit ``--mrl`` and ``--mfe`` arguments are the
+    canonical single-condition interface.
+    """
+
+    legacy_targets = getattr(args, "targets", None)
+    if legacy_targets:
+        if isinstance(legacy_targets, str):
+            legacy_targets = [legacy_targets]
+        if (
+            len(legacy_targets) == 2
+            and all("," not in str(target) for target in legacy_targets)
+        ):
+            return [[float(legacy_targets[0]), float(legacy_targets[1])]]
+
+        target_pairs = []
+        for target in legacy_targets:
+            if isinstance(target, (list, tuple, np.ndarray)) and len(target) == 2:
+                values = target
+            else:
+                values = [value.strip() for value in str(target).split(",")]
+            if len(values) != 2:
+                raise ValueError(
+                    "--targets values must be 'MRL,MFE' pairs. "
+                    f"Got: {target!r}"
+                )
+            target_pairs.append([float(values[0]), float(values[1])])
+        return target_pairs
+
+    mrl = getattr(args, "mrl", None)
+    mfe = getattr(args, "mfe", None)
+    return [[
+        float(mrl) if mrl is not None else float("nan"),
+        float(mfe) if mfe is not None else float("nan"),
+    ]]
+
+
+def _finite_target_pairs(targets):
+    """Select targets that can be drawn as points on the two-label scatter."""
+
+    return [
+        [float(target[0]), float(target[1])]
+        for target in (targets or [])
+        if np.isfinite(float(target[0])) and np.isfinite(float(target[1]))
+    ]
+
+
+def _describe_targets(targets):
+    """Create a human-readable conditioning description, including masks."""
+
+    if not targets:
+        return "MRL/MFE-unconditioned generation"
+    if len(targets) != 1:
+        return f"{len(targets)} conditioning targets"
+
+    target_mrl, target_mfe = (float(value) for value in targets[0])
+    has_mrl, has_mfe = np.isfinite(target_mrl), np.isfinite(target_mfe)
+    if has_mrl and has_mfe:
+        return f"target MRL={target_mrl:g}, MFE={target_mfe:g}"
+    if has_mrl:
+        return f"MRL-only target MRL={target_mrl:g}"
+    if has_mfe:
+        return f"MFE-only target MFE={target_mfe:g}"
+    return "MRL/MFE-unconditioned generation"
+
+
+def _as_constraint_tokens(value):
+    if value is None:
+        return []
+    return [value] if isinstance(value, str) else list(value)
 
 
 def compute_shannon_entropy_base_and_amino(sequences, aminos, amino_pos_list):
@@ -106,7 +213,7 @@ def compute_shannon_entropy_base_and_amino(sequences, aminos, amino_pos_list):
         # assign same entropy to p,p+1,p+2
         for pp in [p, p+1, p+2]:
             pos_entropy_3mer[pp] = H3
-            norm_entropy_3mer[pp] = H3 / maxH3
+            norm_entropy_3mer[pp] = H3 / maxH3 if maxH3 > 0 else 0.0
 
     # merged entropy (original behavior)
     merged_entropy = np.zeros(L)
@@ -194,15 +301,21 @@ def plot_amino_constraint_tripanel(seqs, amino, amino_pos, savepath=None, title=
     H_final = entropy_result["normalized_entropy"]
 
     n_amino = len(amino)
-    ncols = max(n_amino, 1)
+    ncols = min(4, max(n_amino, 1))
+    nrows = max(1, math.ceil(n_amino / ncols))
 
-    fig = plt.figure(figsize=figure_size)
+    fig = plt.figure(figsize=(figure_size[0], 5.0 + 1.8 * nrows))
     fig.subplots_adjust(left=0.08, right=0.96, top=0.92, bottom=0.08)
     # === NEW: 3-row layout: LOGO → PIE → ENTROPY ===
-    gs_outer = fig.add_gridspec(nrows=3, ncols=1, height_ratios=[1.0, 1.0, 1.0], hspace=0.32)
+    gs_outer = fig.add_gridspec(
+        nrows=3,
+        ncols=1,
+        height_ratios=[1.0, max(1.2, 1.15 * nrows), 1.0],
+        hspace=0.32,
+    )
 
     gs_logo    = gs_outer[0].subgridspec(1, 1)
-    gs_pies    = gs_outer[1].subgridspec(1, ncols)
+    gs_pies    = gs_outer[1].subgridspec(nrows, ncols, wspace=0.25, hspace=0.30)
     gs_entropy = gs_outer[2].subgridspec(1, 1)
 
     ax_logo = fig.add_subplot(gs_logo[0,0])
@@ -221,17 +334,15 @@ def plot_amino_constraint_tripanel(seqs, amino, amino_pos, savepath=None, title=
     min_pct_for_label = 10.0
 
     for idx, (aa, p) in enumerate(zip(amino, amino_pos)):
-        ax_pie = fig.add_subplot(gs_pies[0, idx])
+        ax_pie = fig.add_subplot(gs_pies[idx // ncols, idx % ncols])
 
-        codons = AMINO_TO_CODONS[aa]
-        counts = [sum(1 for s in seqs if s[p:p+3] == c) for c in codons]
+        labels, counts, invalid_count = _amino_codon_counts_with_invalid(seqs, aa, p)
         total = sum(counts)
-        if total == 0:
-            counts = [1]*len(counts)
-            total = sum(counts)
-
         percentages = [c/total*100 for c in counts]
-        wedge_labels = [c if pct >= min_pct_for_label else "" for c,pct in zip(codons, percentages)]
+        wedge_labels = [
+            label if label == "Invalid" or pct >= min_pct_for_label else ""
+            for label, pct in zip(labels, percentages)
+        ]
 
         wedges, texts, autotexts = ax_pie.pie(
             counts,
@@ -246,8 +357,17 @@ def plot_amino_constraint_tripanel(seqs, amino, amino_pos, savepath=None, title=
         for t in autotexts:
             t.set_color("white")
 
-        ax_pie.set_title(f"amino: {aa}", fontsize=clabel_fontsize, fontweight="bold")
+        valid_count = total - invalid_count
+        ax_pie.set_title(
+            f"amino: {aa} (valid {valid_count}/{total})",
+            fontsize=clabel_fontsize,
+            fontweight="bold",
+        )
         ax_pie.axis("equal")
+
+    for empty_idx in range(n_amino, nrows * ncols):
+        ax_empty = fig.add_subplot(gs_pies[empty_idx // ncols, empty_idx % ncols])
+        ax_empty.axis("off")
 
     # ===== ENTROPY (moved to bottom) =====
     x = np.arange(L)
@@ -282,21 +402,32 @@ def plot_amino_constraint_tripanel(seqs, amino, amino_pos, savepath=None, title=
 
 
 
-def plot_codon_constraint_duopanel(seqs, codon_pos=None, savepath=None, title=None):
+def plot_codon_constraint_duopanel(
+    seqs,
+    codon_pos=None,
+    savepath=None,
+    title=None,
+    nucleotide_regions=None,
+):
     """
-    Duopanel visualization for CODON-specific RePaint experiments:
+    Duopanel visualization for nucleotide-specific RePaint experiments:
       Panel 1: 1-mer sequence logo
       Panel 2: position-wise 1-mer Shannon entropy
 
     Args:
         seqs: list of sequences (DNA or RNA)
-        codon_pos: list of codon start positions (optional; used only for annotation highlight)
+        codon_pos: legacy list of three-nucleotide constraint starts
+        nucleotide_regions: optional ``(start, length)`` regions; preferred for
+            arbitrary-length nucleotide constraints
         savepath: output file path
         title: big title for the whole figure
     """
 
     # ---------- imports ----------
     seqs = [dna_to_rna(s) for s in seqs]
+    codon_pos = codon_pos or []
+    if nucleotide_regions is None:
+        nucleotide_regions = [(position, 3) for position in codon_pos]
 
     L = len(seqs[0])
     bases = ['A', 'C', 'G', 'U']
@@ -342,9 +473,19 @@ def plot_codon_constraint_duopanel(seqs, codon_pos=None, savepath=None, title=No
 
     # Panel 2 — 1-mer Shannon entropy (normalized)
     ax_H.plot(x, H, color="blue", linewidth=2, label="1-mer (base positions)")
-    for p in codon_pos:
-        for pp in [p, p + 1]:
-            ax_H.plot([pp, pp + 1], [H[pp], H[pp + 1]], color="orange", linewidth=5)
+    for start, length in nucleotide_regions:
+        region_start = max(0, int(start))
+        region_stop = min(L, region_start + int(length))
+        if region_stop <= region_start:
+            continue
+        ax_H.axvspan(
+            region_start - 0.5,
+            region_stop - 0.5,
+            color="orange",
+            alpha=0.18,
+        )
+        region_x = x[region_start:region_stop]
+        ax_H.plot(region_x, H[region_start:region_stop], color="orange", linewidth=5)
 
     ax_H.set_xlabel("Position", fontsize=tick_fontsize)
     ax_H.set_ylabel("Normalized Entropy", fontsize=tick_fontsize)
@@ -357,7 +498,7 @@ def plot_codon_constraint_duopanel(seqs, codon_pos=None, savepath=None, title=No
 
     # Legend
     blue_line = mlines.Line2D([], [], color='blue', label='Base (1-mer entropy)')
-    orange_line = mlines.Line2D([], [], color='orange', label='Codon (3-mer entropy)')
+    orange_line = mlines.Line2D([], [], color='orange', label='Constrained nucleotides')
     ax_H.legend(handles=[blue_line, orange_line], fontsize=clabel_fontsize)
     ax_H.set_title('Position-wise Normalized Shannon Entropy', fontsize=tick_fontsize)
 
@@ -368,41 +509,218 @@ def plot_codon_constraint_duopanel(seqs, codon_pos=None, savepath=None, title=No
     plt.close()
 
 
-def plot_MRL_MFE_scatter(mrls, mfes, savepath=None, title=None):
+def plot_MRL_MFE_scatter(mrls, mfes, savepath=None, title=None, targets=None):
     plt.figure(figsize=figure_size)
     plt.scatter(mrls, mfes, s=6, alpha=0.35, label="Generated")
     plt.scatter([mrls.mean()], [mfes.mean()], s=80, marker='*', label="Mean")
+    finite_targets = _finite_target_pairs(targets)
+    if finite_targets:
+        plt.scatter(
+            [target[0] for target in finite_targets],
+            [target[1] for target in finite_targets],
+            s=70,
+            marker='x',
+            linewidths=2,
+            color='black',
+            label="Targets",
+        )
     plt.xlabel('Predicted MRL', fontsize=label_fontsize)
     plt.ylabel('Predicted MFE', fontsize=label_fontsize)
-    plt.axis([2.0, 9, -30.0, 0])
+    target_mrls = [target[0] for target in targets] if targets else []
+    target_mfes = [target[1] for target in targets] if targets else []
+    x_limits = _expanded_axis_limits([*mrls, *target_mrls], (2.0, 9.0))
+    y_limits = _expanded_axis_limits([*mfes, *target_mfes], (-30.0, 0.0))
+    plt.xlim(*x_limits)
+    plt.ylim(*y_limits)
     plt.tick_params(axis='both', which='major', labelsize=tick_fontsize)
     plt.legend(fontsize=legend_fontsize, frameon=True)
     plt.title(title, fontsize=title_fontsize)
     plt.tight_layout()
     plt.savefig(savepath, dpi=300)
+    plt.close()
+
+
+def plot_cai_response(records, target_adaptiveness, savepath, effective_reference=None):
+    """Plot achieved sequence CAI against the specified adaptiveness alpha."""
+
+    all_data = pd.DataFrame(records).copy()
+    all_data["CAI"] = pd.to_numeric(all_data["CAI"], errors="coerce")
+    if "peptide_valid" in all_data:
+        valid_mask = all_data["peptide_valid"].map(
+            lambda value: value is True or str(value).strip().lower() == "true"
+        )
+    else:
+        valid_mask = np.ones(len(all_data), dtype=bool)
+    data = all_data[valid_mask & np.isfinite(all_data["CAI"])]
+
+    fig, ax = plt.subplots(figsize=figure_size)
+    if data.empty:
+        ax.text(
+            0.0,
+            0.5,
+            "No peptide-valid sequences with finite CAI",
+            ha="center",
+            va="center",
+            fontsize=text_fontsize,
+        )
+    else:
+        achieved_mean = float(data["CAI"].mean())
+        achieved_std = float(data["CAI"].std(ddof=1)) if len(data) > 1 else 0.0
+        grouped = (
+            data.groupby(
+                ["target_MRL", "target_MFE"], sort=False, dropna=False
+            )["CAI"]
+            .mean()
+            .reset_index()
+        )
+        ax.bar(
+            [0.0],
+            [achieved_mean],
+            yerr=[achieved_std],
+            width=0.42,
+            color="#4C8DA5",
+            alpha=0.88,
+            capsize=6,
+            edgecolor="white",
+            label="Peptide-valid sequences (mean +/- SD)",
+            zorder=2,
+        )
+        offsets = np.linspace(-0.13, 0.13, len(grouped)) if len(grouped) > 1 else np.array([0.0])
+        colors = plt.get_cmap("tab10")(np.linspace(0, 1, max(len(grouped), 1)))
+        for offset, color, (_, row) in zip(offsets, colors, grouped.iterrows()):
+            ax.scatter(
+                [offset],
+                [row["CAI"]],
+                s=65,
+                color=color,
+                edgecolor="black",
+                linewidth=0.4,
+                label=_describe_targets(
+                    [[row["target_MRL"], row["target_MFE"]]]
+                ),
+                zorder=4,
+            )
+    ax.scatter(
+        [0.0],
+        [target_adaptiveness],
+        marker="_",
+        s=320,
+        linewidth=2.2,
+        color="black",
+        label="Specified adaptiveness alpha",
+        zorder=5,
+    )
+    if effective_reference is not None and not math.isclose(
+        float(effective_reference), float(target_adaptiveness), abs_tol=1e-9
+    ):
+        ax.scatter(
+            [0.0],
+            [effective_reference],
+            marker="_",
+            s=320,
+            linewidth=2.2,
+            color="#D1495B",
+            label="Geometric mean of feasible per-position alpha values",
+            zorder=5,
+        )
+
+    reference_values = [target_adaptiveness]
+    if effective_reference is not None:
+        reference_values.append(effective_reference)
+    y_values = np.concatenate((data["CAI"].to_numpy(), np.asarray(reference_values)))
+    y_low, y_high = float(y_values.min()), float(y_values.max())
+    padding = max((y_high - y_low) * 0.18, 0.025)
+    ax.set_ylim(max(0.0, y_low - padding), min(1.02, y_high + padding))
+    ax.set_xlim(-0.45, 0.45)
+    ax.set_xticks([0.0], [f"alpha = {target_adaptiveness:g}"])
+    ax.set_xlabel("Specified Codon Relative Adaptiveness", fontsize=label_fontsize)
+    ax.set_ylabel("Generated Sequence CAI", fontsize=label_fontsize)
+    ax.set_title(
+        "CAI Response to Specified Codon Relative Adaptiveness\n"
+        f"peptide-valid sequences: {len(data)}/{len(all_data)}",
+        fontsize=title_fontsize,
+    )
+    ax.tick_params(axis="both", labelsize=tick_fontsize)
+    ax.legend(fontsize=legend_fontsize, frameon=True)
+    fig.tight_layout()
+    fig.savefig(savepath, dpi=300)
+    plt.close(fig)
 
 def read_csv_and_plot(csv_file, args):
     data = pd.read_csv(csv_file)
     mrls, mfes = data['MRL'].to_numpy(), data['MFE'].to_numpy()
-    if len(args.targets) == 1 and "," in args.targets[0]:
-        tgt_mrl, tgt_mfe = [x.strip() for x in args.targets[0].split(",", 1)]
-    elif len(args.targets) == 2:
-        tgt_mrl, tgt_mfe = args.targets[0], args.targets[1]
-    else:
-        raise ValueError(f"--targets expects 'MRL,MFE' or two values. Got: {args.targets}")
-    tgt_mrl, tgt_mfe = float(tgt_mrl), float(tgt_mfe)
-    constraint_text = args.codon if args.mode == 'codon' else args.amino
-    plot_MRL_MFE_scatter(mrls=mrls, mfes=mfes, savepath=args.out.replace('.fasta','_dist.jpg'),
-                         title=f'MRL-MFE Distribution of Generated Sequences(n={args.batch_size})\n'
-                               f' target on MRL={tgt_mrl}, MFE={tgt_mfe}')
+    target_pairs = _normalise_target_pairs(args)
+    target_description = _describe_targets(target_pairs)
+    plot_MRL_MFE_scatter(
+        mrls=mrls,
+        mfes=mfes,
+        savepath=_derived_plot_path(args.out, '_dist.jpg'),
+        title=(
+            f"MRL-MFE Distribution of Generated Sequences(n={len(data)})\n"
+            f"Condition: {target_description}"
+        ),
+        targets=target_pairs,
+    )
 
     seqs = data['Sequence'].astype(str).tolist()
-    if args.mode == 'codon':
-        codon_pos = [int(x.split(":")[0]) for x in args.codon]
-        plot_codon_constraint_duopanel(seqs=seqs, codon_pos=codon_pos, savepath=args.out.replace('.fasta','_constraint.jpg'),
-                                       title=f'Codon Constraints: {constraint_text}')
-    if args.mode == 'amino':
-        amino_pos  = [int(x.split(":")[0]) for x in args.amino]
-        amino_list = [x.split(":")[1].upper() for x in args.amino]
-        plot_amino_constraint_tripanel(seqs=seqs, amino=amino_list, amino_pos=amino_pos, savepath=args.out.replace('.fasta','_constraint.jpg'),
-                                       title=f'Amino-acid Constraints: {constraint_text}')
+    nucleotide_value = getattr(args, "nucleotide", None)
+    if nucleotide_value is None:
+        nucleotide_value = getattr(args, "codon", None)
+    nucleotide = _as_constraint_tokens(nucleotide_value)
+    amino = _as_constraint_tokens(getattr(args, "amino", None))
+    cds_amino = getattr(args, "cds_amino", None)
+    active_constraints = sum(bool(value) for value in (nucleotide, amino, cds_amino))
+    if active_constraints > 1:
+        raise ValueError(
+            "--nucleotide, --amino, and --cds-amino are mutually exclusive"
+        )
+
+    if nucleotide:
+        nucleotide_regions = []
+        for token in nucleotide:
+            try:
+                position_text, sequence = token.split(":", 1)
+                position = int(position_text)
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Invalid nucleotide constraint {token!r}; expected POSITION:SEQUENCE"
+                ) from exc
+            nucleotide_regions.append((position, len(sequence.strip())))
+        plot_codon_constraint_duopanel(
+            seqs=seqs,
+            nucleotide_regions=nucleotide_regions,
+            savepath=_derived_plot_path(args.out, '_constraint.jpg'),
+            title=f"Nucleotide Constraints: {' '.join(nucleotide)}",
+        )
+    elif amino:
+        amino_pos = [int(token.split(":", 1)[0]) for token in amino]
+        amino_list = [token.split(":", 1)[1].upper() for token in amino]
+        plot_amino_constraint_tripanel(
+            seqs=seqs,
+            amino=amino_list,
+            amino_pos=amino_pos,
+            savepath=_derived_plot_path(args.out, '_constraint.jpg'),
+            title=f"Amino-acid Constraints: {' '.join(amino)}",
+        )
+    elif cds_amino:
+        peptide = str(cds_amino).strip().upper()
+        amino_list = list(peptide)
+        amino_start = 50 - 3 * len(amino_list)
+        if not amino_list or amino_start < 0:
+            raise ValueError(
+                "--cds-amino must contain 1-16 amino acids for a 50-nt sequence"
+            )
+        amino_pos = list(range(amino_start, 50, 3))
+        cai = getattr(args, "cai", None)
+        cai_description = (
+            f"\nRequested codon relative adaptiveness alpha={float(cai):g}"
+            if cai is not None
+            else ""
+        )
+        plot_amino_constraint_tripanel(
+            seqs=seqs,
+            amino=amino_list,
+            amino_pos=amino_pos,
+            savepath=_derived_plot_path(args.out, '_constraint.jpg'),
+            title=f"CDS Amino-acid Constraint: {peptide}{cai_description}",
+        )

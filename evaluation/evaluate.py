@@ -1,5 +1,6 @@
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Tuple
 
 import pandas as pd
@@ -308,7 +309,9 @@ if __name__ == "__main__":
     df = predict_mrl(dataloader, model, device=device)
     df = predict_mfe(df, rnafold_path=args.rnafold_path, batch_size=args.mfe_batch)
 
-    out_file = args.fasta.replace('.fasta','.csv')
+    out_file = str(Path(args.fasta).with_suffix('.csv'))
+    if Path(out_file).resolve() == Path(args.fasta).resolve():
+        raise ValueError("refusing to overwrite the input FASTA with evaluator CSV output")
     df.to_csv(out_file, index=False)
 
     print(f"[OK] Predicted {len(df)} sequences -> {out_file}")

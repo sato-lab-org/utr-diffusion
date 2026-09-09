@@ -2,15 +2,11 @@ from typing import Any
 import torch
 import os
 from accelerate import Accelerator
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 from functools import partial
-
-from src.data.dataloader import SequenceDataset
-from src.utils.sample_util import inference
-from src.utils.utils import write_to_fasta
-from src.utils.utils import get_warmup_flatten_cosine_schedule as lr_schedule
 from src.data.dataloader_diy_data import gumbel_softmax
+from src.utils.sample_util import inference
+from src.utils.utils import get_warmup_flatten_cosine_schedule as lr_schedule
 from .train_loop_basic import BasicTrainLoop
 
 class TrainLoop_single_gpu(BasicTrainLoop):
@@ -31,32 +27,38 @@ class TrainLoop_single_gpu(BasicTrainLoop):
         learning_rate: float = 1e-3,
         do_gumbel_softmax: bool = False,
         tgt_values = None, # if None discrete else continueous
+        label_names = None,
+        seq_len: int = 50,
+        checkpoint_dir: str | None = None,
     ):
         super().__init__(model=model, accelerator=accelerator, start_epoch=start_epoch, end_epoch=end_epoch, log_step=log_step,
                          valid_epoch=valid_epoch, sample_epoch=sample_epoch, save_epoch=save_epoch, save_name=save_name,
                          batch_size=batch_size, num_workers=num_workers, learning_rate=learning_rate,
-                         num_classes= data['Classes'] if 'Classes' in data else 3)
+                         num_classes=data['Classes'] if 'Classes' in data else 3,
+                         seq_len=seq_len, checkpoint_dir=checkpoint_dir)
 
         # some setting params
         self.do_gumbel_softmax = do_gumbel_softmax
+        self.label_names = label_names
         self.tgt_values = tgt_values
+        self.seq_len = seq_len
 
         # Dataloader and Learning schedule
-        self.train_dl, self.valid_dl = self._prepare_data_loader(data, batch_size, num_workers)
-        self.schedule = lr_schedule(optimizer=self.optimizer,
-                                    num_training_steps=len(self.train_dl) * self.end_epoch if self.train_dl is not None else 1,
-                                    warmup_rate=0.05, flatten_rate=0.7,)
+        self.train_dl, self.valid_dl = self._prepare_data_loader(data)
+        self.schedule = lr_schedule(
+            optimizer=self.optimizer,
+            num_training_steps=len(self.train_dl) * self.end_epoch if self.train_dl is not None else 1,
+            warmup_rate=0.05,
+            flatten_rate=0.7,
+        )
 
-    def _prepare_data_loader(self, data, batch_size, num_workers):
-        if data != {}:  # case "data={}" for sample only
-            seq_train = SequenceDataset(seqs=data["Train"], c=data['Train_label'])
-            seq_valid = SequenceDataset(seqs=data["Valid"], c=data['Valid_label'])
-            train_dl = DataLoader(seq_train, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-            valid_dl = DataLoader(seq_valid, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=False)
-            return train_dl, valid_dl
-        else:
-            print('Training data not provided, running in sampling mode!!')
-            return None, None
+
+    def _prepare_input(self, x, *, training: bool):
+        if not self.do_gumbel_softmax:
+            return x
+        if training:
+            return gumbel_softmax(x, scale=3, tau=0.8, hard=False)
+        return gumbel_softmax(x, scale=1, tau=1, hard=True)
 
 
     def train_loop(self):
@@ -89,7 +91,7 @@ class TrainLoop_single_gpu(BasicTrainLoop):
         self.model.train()  # shift to train mode
         for step, batch in enumerate(self.train_dl):
             x, y = batch
-            x = gumbel_softmax(x, scale=3, tau=0.8, hard=False) if self.do_gumbel_softmax else x
+            x = self._prepare_input(x, training=True)
             with self.accelerator.autocast():  # Mixed precision on 混合精度オンにする
                 loss = self.model(x, y)
 
@@ -114,7 +116,7 @@ class TrainLoop_single_gpu(BasicTrainLoop):
             with self.accelerator.autocast():
                 for batch in self.valid_dl:
                     x, y = batch
-                    x = gumbel_softmax(x, scale=1, tau=1, hard=True) if self.do_gumbel_softmax else x
+                    x = self._prepare_input(x, training=False)
                     loss = self.model(x, y)
                     total_loss += loss.item()
 
@@ -126,38 +128,81 @@ class TrainLoop_single_gpu(BasicTrainLoop):
         self.log_update(mode='valid', epoch=epoch)
 
 
-
     def sample(self, epoch, write_fasta=True):
         self.model.eval()
         sample_fn = partial(
             inference,
             diffusion_model=self.model,
+            seq_len = self.seq_len,
             class_num=self.num_classes,
             cond_weight=self.model.cond_weight,
+            label_names=self.label_names,
             target_values=self.tgt_values,
-            device=self.accelerator.device
+            device= self.accelerator.device
+        )
+        snapshot_dir = (
+            os.path.join(os.path.dirname(self.checkpoint_dir), 'snapshots')
+            if self.checkpoint_dir is not None
+            else self.save_name
         )
         with torch.no_grad():
             with self.accelerator.autocast():
                 print("\nGenerating synthetic sequences...")
-                if epoch==self.end_epoch and self.is_save_process:
+                if epoch == self.end_epoch and self.is_save_process:
                     seqs, all_images = sample_fn(output_all_steps=True)
+                    os.makedirs(snapshot_dir, exist_ok=True)
                     torch.save({k: v.cpu().numpy() for k, v in all_images.items()},
-                               os.path.join(self.save_name, "all_images_denoising_process.pt"))
+                               os.path.join(snapshot_dir, "all_images_denoising_process.pt"))
                     print("all_images_denoising_process.pt saved!")
                 else:
                     seqs = sample_fn()
 
             if write_fasta:
-                print('Saving fasta file...')
-                write_to_fasta(sequences=seqs, folder_name=self.save_name, epoch=epoch)
+                self._save_fasta(sequences=seqs, folder_name=snapshot_dir, epoch=epoch)
 
-    
+
+    def sample_offline(self, sample_bs:int= 1000, trial_name=None):
+        device = self.accelerator.device
+        model_for_sampling = self.ema_model if self.ema_checkpoint_load else self.model
+        print("Sampling with:", "EMA" if self.ema_checkpoint_load else "RAW")
+        model_for_sampling.to(device)
+        model_for_sampling.eval()
+        sample_fn = partial(
+            inference,
+            diffusion_model=model_for_sampling,
+            sample_bs = sample_bs,
+            seq_len = self.seq_len,
+            class_num=self.num_classes,
+            cond_weight=self.model.cond_weight,
+            label_names = self.label_names,
+            target_values=self.tgt_values,
+            device=device,
+        )
+        with torch.no_grad():
+            print("accelerator.mixed_precision =", self.accelerator.mixed_precision)
+            with self.accelerator.autocast():
+                print("torch.is_autocast_enabled() =", torch.is_autocast_enabled())
+                if torch.cuda.is_available():
+                    print("torch.get_autocast_gpu_dtype() =", torch.get_autocast_gpu_dtype())
+                print("\nGenerating synthetic sequences...")
+                seqs = sample_fn()
+                sample_dir = (
+                    os.path.join(os.path.dirname(self.checkpoint_dir), 'samples')
+                    if self.checkpoint_dir is not None
+                    else os.path.join(self.save_name, 'samples')
+                )
+                self._save_fasta(
+                    sequences=seqs,
+                    folder_name=sample_dir,
+                    trial_name=trial_name,
+                )
+
+    def load_checkpoint_then_sample_offline(self, checkpoint_path, trial_name=None, sample_bs: int = 100):
+        self.load_checkpoint(checkpoint_path)
+        self.sample_offline(trial_name=trial_name, sample_bs=sample_bs)
+
     def load_checkpoint_then_do_sample(self, checkpoint_path):
+        """Legacy sampling entry point retained for existing scripts."""
         self.load_checkpoint(checkpoint_path)
         self.model = self.accelerator.prepare(self.model)
         self.sample(epoch=self.start_epoch, write_fasta=True)
-        
-
-
-

@@ -21,17 +21,19 @@ conda_env/
 # --- Jupyter ---
 .ipynb_checkpoints/
 
-# --- Data & experiment artifacts (大文件) ---
-data/
-checkpoints/
-runs/
-logs/
-save/
-extension_save/
-repaint_save/
-wandb/
-torch/
-src_backup_*/
+# --- Repository-local data & experiment artifacts (大文件) ---
+/data/
+/outputs/
+/checkpoints/
+/runs/
+/logs/
+/save/
+/extension_save/
+/repaint_save/
+/wandb/
+/torch/
+/src_backup_*/
+/.tsubame/
 
 # --- Logs ---
 *.log
@@ -50,7 +52,7 @@ Thumbs.db
 *.safetensors
 
 # runtime outputs
-examples/
+/examples/
 *.fasta
 *.csv
 

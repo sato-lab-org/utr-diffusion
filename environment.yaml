@@ -12,10 +12,15 @@ dependencies:
   - matplotlib
   - numpy=1.26
   - pandas
+  - pyyaml
+  - pytest
   - scipy
+  - scikit-learn
+  - tqdm
   - einops
   - biopython
   - pytorch
+  - pytorch-cuda=12.1
   - torchvision
   - pip
   - logomaker
