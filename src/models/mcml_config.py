@@ -5,6 +5,8 @@ that a command-line change cannot silently create a checkpoint-incompatible
 network.
 """
 
+from pathlib import Path
+
 MCML_LABEL_NAMES = ("real_MRL", "pred_MFE")
 MCML_UNET_KWARGS = {
     "dim": 200,
@@ -27,13 +29,45 @@ MCML_DIFFUSION_KWARGS = {
     "label_wise_mask": False,
 }
 
-# The public Hugging Face filename identifies the MCML architecture explicitly.
-MCML_CHECKPOINT_PATH = "checkpoints/mcml_epoch_2000.pt"
+MCML_CAI_GAMMA = 0.04
+MCML_CHECKPOINT_STATE = "model"
+MCML_HF_REPO_ID = "chuankai-dai/utr-diffusion-checkpoint"
+MCML_HF_FILENAME = "checkpoints/mcml_epoch_2000.pt"
+MCML_HF_REVISION = "b9bbe1e45531febd8b1fec6fbf20ff598af6408d"
+
 # Training writes the released checkpoint below this repository-local output.
 MCML_TRAIN_OUTPUT_DIR = "outputs/real_MRL_pred_MFE_260k_mcml"
 MCML_TRAIN_CHECKPOINT_DIR = f"{MCML_TRAIN_OUTPUT_DIR}/checkpoints"
 # Keep the train_mcml.py output filename unchanged from the completed run.
 MCML_LOCAL_CHECKPOINT_PATH = f"{MCML_TRAIN_CHECKPOINT_DIR}/epoch_2000.pt"
+
+
+def resolve_mcml_checkpoint_path(checkpoint: str | Path | None = None) -> Path:
+    """Resolve an explicit/local checkpoint or download the pinned Hub release."""
+
+    if checkpoint is not None:
+        return Path(checkpoint).expanduser()
+
+    repository_root = Path(__file__).resolve().parents[2]
+    repository_checkpoint = repository_root / MCML_HF_FILENAME
+    if repository_checkpoint.is_file():
+        return repository_checkpoint
+
+    try:
+        from huggingface_hub import hf_hub_download
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "huggingface_hub is required for automatic checkpoint download; "
+            "install the release environment or pass --checkpoint PATH"
+        ) from exc
+
+    return Path(
+        hf_hub_download(
+            repo_id=MCML_HF_REPO_ID,
+            filename=MCML_HF_FILENAME,
+            revision=MCML_HF_REVISION,
+        )
+    )
 
 
 def build_mcml_unet(**overrides):

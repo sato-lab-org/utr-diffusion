@@ -29,7 +29,8 @@ class DesignUtrTests(unittest.TestCase):
         return args
 
     def test_public_help_uses_orthogonal_targets_and_constraints(self):
-        help_text = design_utr.build_parser().format_help()
+        parser = design_utr.build_parser()
+        help_text = parser.format_help()
 
         for option in (
             "--mrl",
@@ -40,8 +41,23 @@ class DesignUtrTests(unittest.TestCase):
             "--cds-amino",
         ):
             self.assertIn(option, help_text)
-        for removed_option in ("--mode", "--layout", "--preset", "--peptide"):
+        for removed_option in (
+            "--MRL",
+            "--MFE",
+            "--target-adaptiveness",
+            "--target-cai",
+            "--targets",
+            "--mode",
+            "--codon",
+            "--gamma",
+            "--checkpoint-weights",
+            "--eval-repo",
+            "--layout",
+            "--preset",
+            "--peptide",
+        ):
             self.assertNotIn(removed_option, help_text)
+            self.assertNotIn(removed_option, parser._option_string_actions)
 
     def test_evaluator_helper_keeps_legacy_positional_signature(self):
         parameters = inspect.signature(design_utr.run_evaluator).parameters
@@ -62,14 +78,12 @@ class DesignUtrTests(unittest.TestCase):
         self.assertEqual(parameters["device"].default, "cpu")
         self.assertEqual(parameters["model_path"].default, "Model/model.pt")
 
-    def test_raw_model_weights_are_the_paper_reproduction_default(self):
-        args = design_utr.build_parser().parse_args(
-            ["--mrl", "4", "--nucleotide", "2:AGC"]
-        )
+    def test_checkpoint_override_is_optional(self):
+        args = design_utr.build_parser().parse_args([])
 
-        self.assertEqual(args.checkpoint_weights, "model")
+        self.assertIsNone(args.checkpoint)
 
-    def test_auto_checkpoint_weights_fall_back_when_ema_is_empty(self):
+    def test_build_diffusion_uses_the_fixed_release_model_state(self):
         class FakeDiffusion:
             def __init__(self):
                 self.loaded = None
@@ -86,16 +100,21 @@ class DesignUtrTests(unittest.TestCase):
         diffusion = FakeDiffusion()
         args = Namespace(
             checkpoint="unused.pt",
-            checkpoint_weights="auto",
             cond_weight=4.0,
         )
         raw_state = {"weight": object()}
+        ema_state = {"weight": object()}
         with (
             patch.object(design_utr, "build_mcml_diffusion", return_value=diffusion),
             patch.object(
                 design_utr,
+                "resolve_mcml_checkpoint_path",
+                return_value=Path("unused.pt"),
+            ),
+            patch.object(
+                design_utr,
                 "_load_checkpoint",
-                return_value={"model": raw_state, "ema_model": None, "epoch": 1},
+                return_value={"model": raw_state, "ema_model": ema_state, "epoch": 1},
             ),
         ):
             result = design_utr.build_diffusion(args, "cpu")
@@ -106,42 +125,49 @@ class DesignUtrTests(unittest.TestCase):
     def test_mrl_only_resolves_to_fixed_width_masked_target(self):
         args = self.parse_and_validate("--mrl", "8")
 
-        targets = design_utr.resolve_targets(args)
+        target = design_utr.resolve_conditioning_target(args)
 
-        self.assertEqual(targets[0][0], 8.0)
-        self.assertTrue(math.isnan(targets[0][1]))
+        self.assertEqual(target[0], 8.0)
+        self.assertTrue(math.isnan(target[1]))
 
     def test_mfe_only_resolves_to_fixed_width_masked_target(self):
         args = self.parse_and_validate("--mfe", "-20")
 
-        targets = design_utr.resolve_targets(args)
+        target = design_utr.resolve_conditioning_target(args)
 
-        self.assertTrue(math.isnan(targets[0][0]))
-        self.assertEqual(targets[0][1], -20.0)
+        self.assertTrue(math.isnan(target[0]))
+        self.assertEqual(target[1], -20.0)
 
     def test_joint_mrl_mfe_target_preserves_model_label_order(self):
         args = self.parse_and_validate("--mrl", "8", "--mfe", "-2")
 
-        self.assertEqual(design_utr.resolve_targets(args), [[8.0, -2.0]])
+        self.assertEqual(design_utr.resolve_conditioning_target(args), [8.0, -2.0])
 
     def test_cai_only_uses_both_labels_as_missing(self):
         args = self.parse_and_validate("--cai", "0.9", "--cds-amino", "MG")
 
-        targets = design_utr.resolve_targets(args)
+        target = design_utr.resolve_conditioning_target(args)
 
-        self.assertTrue(math.isnan(targets[0][0]))
-        self.assertTrue(math.isnan(targets[0][1]))
+        self.assertTrue(math.isnan(target[0]))
+        self.assertTrue(math.isnan(target[1]))
 
-    def test_at_least_one_generation_target_is_required(self):
+    def test_no_design_target_selects_unconditional_generation(self):
         args = design_utr.build_parser().parse_args([])
 
-        with self.assertRaises(ValueError):
-            design_utr.validate_arguments(args)
+        design_utr.validate_arguments(args)
+        target = design_utr.resolve_conditioning_target(args)
+
+        self.assertTrue(math.isnan(target[0]))
+        self.assertTrue(math.isnan(target[1]))
+
+    def test_default_output_is_separate_from_training_outputs(self):
+        args = design_utr.build_parser().parse_args([])
+
+        self.assertEqual(args.out, "design_outputs/design_utr.fasta")
 
     def test_nucleotide_constraints_accept_arbitrary_length_sequences(self):
         positions, sequences = design_utr.parse_nucleotide_constraints(
             ["2:agcu", "10:TT"],
-            require_codon=False,
         )
 
         self.assertEqual(positions, [2, 10])
@@ -151,19 +177,16 @@ class DesignUtrTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overlap"):
             design_utr.parse_nucleotide_constraints(
                 ["2:ACGT", "5:TT"],
-                require_codon=False,
             )
         with self.assertRaisesRegex(ValueError, "0-49|within|50|bounds|fit"):
             design_utr.parse_nucleotide_constraints(
                 ["48:AAA"],
-                require_codon=False,
             )
 
     def test_nucleotide_constraints_reject_non_nucleotides(self):
         with self.assertRaisesRegex(ValueError, "nucleotide|ACGT"):
             design_utr.parse_nucleotide_constraints(
                 ["2:ANR"],
-                require_codon=False,
             )
 
     def test_cds_amino_fills_the_suffix_and_excludes_initial_aug_from_cai(self):
@@ -210,7 +233,7 @@ class DesignUtrTests(unittest.TestCase):
                         ["--mrl", "8", *constraint_tokens]
                     )
 
-    def test_no_sequence_constraint_calls_diffusion_directly(self):
+    def test_unconditional_generation_calls_diffusion_with_missing_labels(self):
         class FakeDiffusion:
             device = torch.device("cpu")
 
@@ -228,8 +251,8 @@ class DesignUtrTests(unittest.TestCase):
                 )
                 return torch.zeros(shape)
 
-        args = self.parse_and_validate("--mrl", "8", "--batch-size", "2")
-        targets = design_utr.resolve_targets(args)
+        args = self.parse_and_validate("--batch-size", "2")
+        target = design_utr.resolve_conditioning_target(args)
         diffusion = FakeDiffusion()
 
         with (
@@ -244,13 +267,13 @@ class DesignUtrTests(unittest.TestCase):
                 side_effect=AssertionError("amino RePaint should not be constructed"),
             ),
         ):
-            samples = design_utr.generate_samples(args, diffusion, targets)
+            samples = design_utr.generate_samples(args, diffusion, target)
 
         self.assertEqual(tuple(samples.shape), (2, 1, 4, 50))
         self.assertEqual(len(diffusion.calls), 1)
         call = diffusion.calls[0]
         self.assertEqual(tuple(call["classes"].shape), (2, 2))
-        self.assertTrue(torch.equal(call["classes"][:, 0], torch.full((2,), 8.0)))
+        self.assertTrue(torch.isnan(call["classes"][:, 0]).all())
         self.assertTrue(torch.isnan(call["classes"][:, 1]).all())
         self.assertEqual(call["shape"], (2, 1, 4, 50))
 
@@ -264,10 +287,6 @@ class DesignUtrTests(unittest.TestCase):
 
         args.out = "outputs/valid.FASTA"
         design_utr.validate_arguments(args)
-
-    def test_duplicate_batch_target_pairs_are_rejected(self):
-        with self.assertRaisesRegex(ValueError, "duplicate"):
-            design_utr.parse_targets(["4,-20", "4.0,-20.0"])
 
     def test_cai_metadata_reports_position_specific_feasible_alpha(self):
         records = [
@@ -322,29 +341,24 @@ class DesignUtrTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "between 0 and 47|bounds"):
             design_utr.parse_index_value_pairs(["48:M"], "amino")
 
-    def test_decode_samples_preserves_masked_targets_and_target_major_order(self):
-        samples = np.full((3, 1, 4, 50), -1.0, dtype=np.float32)
+    def test_decode_samples_preserves_a_masked_target(self):
+        samples = np.full((2, 1, 4, 50), -1.0, dtype=np.float32)
         samples[0, 0, 0, :] = 1.0
         samples[1, 0, 1, :] = 1.0
-        samples[2, 0, 3, :] = 1.0
-        targets = [[8.0, float("nan")], [float("nan"), -2.0], [float("nan"), float("nan")]]
 
-        records = design_utr.decode_samples(samples, targets, 1)
+        records = design_utr.decode_samples(samples, [8.0, float("nan")], 2)
 
         self.assertEqual(records[0]["Sequence"], "A" * 50)
         self.assertEqual(records[1]["Sequence"], "C" * 50)
-        self.assertEqual(records[2]["Sequence"], "T" * 50)
         self.assertEqual(records[0]["target_MRL"], 8.0)
         self.assertTrue(math.isnan(records[0]["target_MFE"]))
-        self.assertTrue(math.isnan(records[1]["target_MRL"]))
-        self.assertEqual(records[1]["target_MFE"], -2.0)
 
     def test_cai_only_fasta_id_describes_the_requested_cai(self):
         samples = np.zeros((1, 1, 4, 50), dtype=np.float32)
 
         records = design_utr.decode_samples(
             samples,
-            [[float("nan"), float("nan")]],
+            [float("nan"), float("nan")],
             1,
             cai=0.9,
         )
@@ -375,7 +389,7 @@ class DesignUtrTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not preserved"):
             design_utr.verify_generated_constraints(invalid, args)
 
-    def test_cai_summary_groups_targets_even_when_one_or_both_labels_are_missing(self):
+    def test_cai_summary_handles_one_or_both_missing_labels(self):
         cases = (
             ("mrl_only", ("--mrl", "8"), 8.0, float("nan")),
             ("mfe_only", ("--mfe", "-2"), float("nan"), -2.0),
@@ -419,8 +433,9 @@ class DesignUtrTests(unittest.TestCase):
 
                 with summary_path.open(newline="", encoding="utf-8") as handle:
                     rows = list(csv.DictReader(handle))
-                self.assertEqual(len(rows), 2)
-                self.assertEqual(rows[1]["n_sequences"], "1")
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["scope"], "design_condition")
+                self.assertEqual(rows[0]["n_sequences"], "1")
 
 
 if __name__ == "__main__":

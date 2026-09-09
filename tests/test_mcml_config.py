@@ -2,14 +2,19 @@ import unittest
 from pathlib import Path
 
 from src.models.mcml_config import (
-    MCML_CHECKPOINT_PATH,
+    MCML_CAI_GAMMA,
+    MCML_CHECKPOINT_STATE,
     MCML_DIFFUSION_KWARGS,
+    MCML_HF_FILENAME,
+    MCML_HF_REPO_ID,
+    MCML_HF_REVISION,
     MCML_LABEL_NAMES,
     MCML_LOCAL_CHECKPOINT_PATH,
     MCML_TRAIN_CHECKPOINT_DIR,
     MCML_TRAIN_OUTPUT_DIR,
     MCML_UNET_KWARGS,
     build_mcml_diffusion,
+    resolve_mcml_checkpoint_path,
 )
 
 
@@ -47,7 +52,11 @@ class McmlReleaseConfigTests(unittest.TestCase):
         )
 
     def test_release_paths_are_unambiguous(self):
-        self.assertEqual(MCML_CHECKPOINT_PATH, "checkpoints/mcml_epoch_2000.pt")
+        self.assertEqual(MCML_HF_REPO_ID, "chuankai-dai/utr-diffusion-checkpoint")
+        self.assertEqual(MCML_HF_FILENAME, "checkpoints/mcml_epoch_2000.pt")
+        self.assertEqual(MCML_HF_REVISION, "b9bbe1e45531febd8b1fec6fbf20ff598af6408d")
+        self.assertEqual(MCML_CHECKPOINT_STATE, "model")
+        self.assertEqual(MCML_CAI_GAMMA, 0.04)
         self.assertEqual(MCML_TRAIN_OUTPUT_DIR, "outputs/real_MRL_pred_MFE_260k_mcml")
         self.assertEqual(
             MCML_TRAIN_CHECKPOINT_DIR,
@@ -56,6 +65,12 @@ class McmlReleaseConfigTests(unittest.TestCase):
         self.assertEqual(
             MCML_LOCAL_CHECKPOINT_PATH,
             "outputs/real_MRL_pred_MFE_260k_mcml/checkpoints/epoch_2000.pt",
+        )
+
+    def test_explicit_checkpoint_path_bypasses_hub_resolution(self):
+        self.assertEqual(
+            resolve_mcml_checkpoint_path("custom/model.pt"),
+            Path("custom/model.pt"),
         )
 
     def test_train_and_sample_use_the_shared_factory(self):
@@ -69,13 +84,10 @@ class McmlReleaseConfigTests(unittest.TestCase):
         self.assertIn("MCML_TRAIN_CHECKPOINT_DIR", source)
         self.assertIn("checkpoint_dir=MCML_TRAIN_CHECKPOINT_DIR", source)
 
-    def test_design_uses_shared_factory_and_checkpoint_default(self):
+    def test_design_uses_shared_factory_and_checkpoint_resolver(self):
         source = (REPO_ROOT / "design_utr.py").read_text(encoding="utf-8")
-        self.assertIn(
-            "from src.models.mcml_config import MCML_CHECKPOINT_PATH, build_mcml_diffusion",
-            source,
-        )
-        self.assertIn("default=MCML_CHECKPOINT_PATH", source)
+        self.assertIn("resolve_mcml_checkpoint_path", source)
+        self.assertNotIn("MCML_CHECKPOINT_PATH", source)
         self.assertIn("build_mcml_diffusion(", source)
 
     def test_training_keeps_all_three_authoritative_datasets(self):

@@ -26,6 +26,7 @@ dependencies:
   - logomaker
   - wandb
   - genomepy
+  - huggingface_hub
   - bedtools
   - viennarna
   - pip:

@@ -74,37 +74,11 @@ def _expanded_axis_limits(values, baseline):
 
 
 def _normalise_target_pairs(args):
-    """Return conditioning targets as ``[MRL, MFE]`` pairs.
+    """Return the conditioning target as a single ``[MRL, MFE]`` pair.
 
     Missing labels are represented by NaN so the plotting layer mirrors the
-    masked-label representation used by MCML. ``--targets`` is the advanced
-    batch interface, while explicit ``--mrl`` and ``--mfe`` arguments are the
-    canonical single-condition interface.
+    masked-label representation used by MCML.
     """
-
-    legacy_targets = getattr(args, "targets", None)
-    if legacy_targets:
-        if isinstance(legacy_targets, str):
-            legacy_targets = [legacy_targets]
-        if (
-            len(legacy_targets) == 2
-            and all("," not in str(target) for target in legacy_targets)
-        ):
-            return [[float(legacy_targets[0]), float(legacy_targets[1])]]
-
-        target_pairs = []
-        for target in legacy_targets:
-            if isinstance(target, (list, tuple, np.ndarray)) and len(target) == 2:
-                values = target
-            else:
-                values = [value.strip() for value in str(target).split(",")]
-            if len(values) != 2:
-                raise ValueError(
-                    "--targets values must be 'MRL,MFE' pairs. "
-                    f"Got: {target!r}"
-                )
-            target_pairs.append([float(values[0]), float(values[1])])
-        return target_pairs
 
     mrl = getattr(args, "mrl", None)
     mfe = getattr(args, "mfe", None)
@@ -663,10 +637,7 @@ def read_csv_and_plot(csv_file, args):
     )
 
     seqs = data['Sequence'].astype(str).tolist()
-    nucleotide_value = getattr(args, "nucleotide", None)
-    if nucleotide_value is None:
-        nucleotide_value = getattr(args, "codon", None)
-    nucleotide = _as_constraint_tokens(nucleotide_value)
+    nucleotide = _as_constraint_tokens(getattr(args, "nucleotide", None))
     amino = _as_constraint_tokens(getattr(args, "amino", None))
     cds_amino = getattr(args, "cds_amino", None)
     active_constraints = sum(bool(value) for value in (nucleotide, amino, cds_amino))

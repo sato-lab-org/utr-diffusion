@@ -59,9 +59,7 @@ def test_scatter_limits_expand_to_include_out_of_range_targets():
 def test_explicit_targets_support_single_label_and_unconditioned_titles(
     mrl, mfe, expected_pair, expected_description
 ):
-    pairs = _normalise_target_pairs(
-        SimpleNamespace(mrl=mrl, mfe=mfe, targets=None)
-    )
+    pairs = _normalise_target_pairs(SimpleNamespace(mrl=mrl, mfe=mfe))
 
     np.testing.assert_equal(pairs[0], expected_pair)
     assert _describe_targets(pairs) == expected_description
@@ -71,16 +69,6 @@ def test_only_complete_target_pairs_are_drawable():
     targets = [[8.0, np.nan], [np.nan, -20.0], [7.0, -2.0]]
 
     assert _finite_target_pairs(targets) == [[7.0, -2.0]]
-
-
-def test_advanced_batch_targets_remain_readable():
-    args = SimpleNamespace(
-        mrl=None,
-        mfe=None,
-        targets=["4,-20", "8,-2"],
-    )
-
-    assert _normalise_target_pairs(args) == [[4.0, -20.0], [8.0, -2.0]]
 
 
 def _write_plot_input(tmp_path):
@@ -99,7 +87,6 @@ def _plot_args(tmp_path, **overrides):
     values = {
         "mrl": 8.0,
         "mfe": -2.0,
-        "targets": None,
         "nucleotide": None,
         "amino": None,
         "cds_amino": None,

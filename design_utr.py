@@ -15,7 +15,6 @@ import random
 import statistics
 import subprocess
 import sys
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +23,12 @@ from typing import Any
 import torch
 
 from src.metrics.cai import calculate_cai, translate_codons
-from src.models.mcml_config import MCML_CHECKPOINT_PATH, build_mcml_diffusion
+from src.models.mcml_config import (
+    MCML_CAI_GAMMA,
+    MCML_CHECKPOINT_STATE,
+    build_mcml_diffusion,
+    resolve_mcml_checkpoint_path,
+)
 from src.models.repaint.repaint_amino_cml import (
     RePaint_Amino_Continuous_Multi_Labels as Repaint_Amino_MCML,
 )
@@ -68,25 +72,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--checkpoint",
-        default=MCML_CHECKPOINT_PATH,
-        help="Final train_mcml.py checkpoint (.pt).",
-    )
-    parser.add_argument(
-        "--checkpoint-weights",
-        choices=("auto", "ema", "model"),
-        default="model",
+        type=Path,
+        default=None,
         help=(
-            "Checkpoint state to load. The default 'model' reproduces the manuscript "
-            "Evaluation 3 / Benchmark 2 scripts; 'auto' prefers EMA when present."
+            "Optional local MCML checkpoint (.pt). If omitted, use the repository-local "
+            "checkpoint when present, otherwise download it to the Hugging Face cache."
         ),
     )
-    parser.add_argument("--mrl", "--MRL", dest="mrl", type=float, help="Target MRL.")
-    parser.add_argument("--mfe", "--MFE", dest="mfe", type=float, help="Target MFE.")
+    parser.add_argument("--mrl", type=float, help="Target MRL.")
+    parser.add_argument("--mfe", type=float, help="Target MFE.")
     parser.add_argument(
         "--cai",
-        "--target-adaptiveness",
-        "--target-cai",
-        dest="cai",
         type=float,
         help=(
             "Target codon relative-adaptiveness alpha in (0,1]. Requires "
@@ -118,33 +114,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    # Advanced batch interface retained because scalar --mrl/--mfe flags
-    # intentionally describe one target condition per invocation.
-    parser.add_argument(
-        "--targets",
-        nargs="+",
-        metavar="MRL,MFE",
-        help=(
-            "Advanced batch interface for one or more joint MRL,MFE pairs. "
-            "Cannot be combined with --mrl or --mfe."
-        ),
-    )
-
-    # One-release compatibility with the original public constraint CLI.
-    # These options are absent from --help and normalized to the new interface.
-    parser.add_argument("--mode", choices=("codon", "amino"), help=argparse.SUPPRESS)
-    constraint_group.add_argument(
-        "--codon", nargs="+", metavar="POS:CODON", help=argparse.SUPPRESS
-    )
-    parser.add_argument(
-        "--gamma",
-        type=float,
-        default=0.04,
-        help="Strength of the codon-usage distance weighting (default: 0.04).",
-    )
     parser.add_argument(
         "--out",
-        default="outputs/design_utr.fasta",
+        default="design_outputs/design_utr.fasta",
         help="Output FASTA path; supported suffixes are .fasta, .fa, and .fna.",
     )
     parser.add_argument("--batch-size", type=int, default=100)
@@ -154,7 +126,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Allow replacement of existing FASTA, CSV, and plot outputs.",
+        help=(
+            "Overwrite existing FASTA, CSV, and plot files; without this flag "
+            "the run stops before loading the model."
+        ),
     )
     parser.add_argument(
         "--do-eval",
@@ -163,8 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--eval-dir",
-        "--eval-repo",
-        dest="eval_dir",
         default="evaluation",
         help="Directory containing evaluate.py (default: evaluation).",
     )
@@ -172,32 +145,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def parse_targets(tokens: list[str]) -> list[list[float]]:
-    """Parse advanced batch MRL,MFE target pairs."""
-
-    targets: list[list[float]] = []
-    seen: set[tuple[float, float]] = set()
-    for token in tokens:
-        parts = token.split(",")
-        if len(parts) != 2:
-            raise ValueError(
-                f"invalid --targets item {token!r}; use MRL,MFE, for example 4,-20"
-            )
-        pair = [float(parts[0]), float(parts[1])]
-        if not all(math.isfinite(value) for value in pair):
-            raise ValueError(f"target values must be finite: {token!r}")
-        key = (pair[0], pair[1])
-        if key in seen:
-            raise ValueError(
-                f"duplicate --targets pair {token!r}; each MRL,MFE pair must be unique"
-            )
-        seen.add(key)
-        targets.append(pair)
-    return targets
-
-
-def resolve_targets(args: argparse.Namespace) -> list[list[float]]:
-    """Return fixed-width ``[MRL, MFE]`` rows for the two-label MCML model.
+def resolve_conditioning_target(args: argparse.Namespace) -> list[float]:
+    """Return a fixed-width ``[MRL, MFE]`` row for the two-label MCML model.
 
     A label omitted by the user is encoded as NaN.  The MCML diffusion derives
     a separate presence mask before replacing NaN values with zeros, so neither
@@ -205,26 +154,17 @@ def resolve_targets(args: argparse.Namespace) -> list[list[float]]:
     missing label.
     """
 
-    batch_targets = getattr(args, "targets", None)
     mrl = getattr(args, "mrl", None)
     mfe = getattr(args, "mfe", None)
-    cai = getattr(args, "cai", None)
-
-    if batch_targets is not None:
-        if mrl is not None or mfe is not None:
-            raise ValueError("--targets cannot be combined with --mrl or --mfe")
-        return parse_targets(batch_targets)
 
     for option, value in (("--mrl", mrl), ("--mfe", mfe)):
         if value is not None and not math.isfinite(value):
             raise ValueError(f"{option} must be finite")
 
-    if mrl is None and mfe is None and cai is None:
-        raise ValueError("specify at least one design target: --mrl, --mfe, or --cai")
-    return [[
+    return [
         float(mrl) if mrl is not None else float("nan"),
         float(mfe) if mfe is not None else float("nan"),
-    ]]
+    ]
 
 
 def parse_index_value_pairs(
@@ -256,9 +196,7 @@ def parse_index_value_pairs(
     return positions, values
 
 
-def parse_nucleotide_constraints(
-    items: list[str], *, require_codon: bool = False
-) -> tuple[list[int], list[str]]:
+def parse_nucleotide_constraints(items: list[str]) -> tuple[list[int], list[str]]:
     """Parse non-overlapping ``POS:SEQ`` exact-nucleotide constraints."""
 
     positions: list[int] = []
@@ -277,10 +215,6 @@ def parse_nucleotide_constraints(
         if not sequence or not set(sequence).issubset(DNA_BASES):
             raise ValueError(
                 f"invalid nucleotide sequence {raw_sequence!r}; use only A/C/G/T/U"
-            )
-        if require_codon and len(sequence) != 3:
-            raise ValueError(
-                f"legacy --codon value {raw_sequence!r} must contain exactly three bases"
             )
         if position < 0 or position + len(sequence) > SEQUENCE_LENGTH:
             raise ValueError(
@@ -327,7 +261,7 @@ def cds_amino_constraints(
 
 
 def _constraint_kind(args: argparse.Namespace) -> str | None:
-    if getattr(args, "nucleotide", None) is not None or getattr(args, "codon", None) is not None:
+    if getattr(args, "nucleotide", None) is not None:
         return "nucleotide"
     if getattr(args, "amino", None) is not None:
         return "amino"
@@ -337,7 +271,7 @@ def _constraint_kind(args: argparse.Namespace) -> str | None:
 
 
 def validate_arguments(
-    args: argparse.Namespace, targets: list[list[float]] | None = None
+    args: argparse.Namespace, target: list[float] | None = None
 ) -> None:
     output_suffix = Path(args.out).suffix.lower()
     if output_suffix not in {".fasta", ".fa", ".fna"}:
@@ -346,13 +280,11 @@ def validate_arguments(
         raise ValueError("--batch-size must be positive")
     if not math.isfinite(args.cond_weight):
         raise ValueError("--cond-weight must be finite")
-    if not math.isfinite(args.gamma) or args.gamma <= 0:
-        raise ValueError("--gamma must be finite and positive")
 
-    if targets is None:
-        targets = resolve_targets(args)
-    if any(len(target) != 2 for target in targets):
-        raise ValueError("MCML target rows must contain exactly [MRL, MFE]")
+    if target is None:
+        target = resolve_conditioning_target(args)
+    if len(target) != 2:
+        raise ValueError("the MCML target must contain exactly [MRL, MFE]")
 
     cai = getattr(args, "cai", None)
     if cai is not None and (not math.isfinite(cai) or not 0 < cai <= 1):
@@ -362,30 +294,10 @@ def validate_arguments(
 
     if getattr(args, "nucleotide", None) is not None:
         parse_nucleotide_constraints(args.nucleotide)
-    if getattr(args, "codon", None) is not None:
-        warnings.warn(
-            "--codon is deprecated; use --nucleotide POS:SEQ",
-            FutureWarning,
-            stacklevel=2,
-        )
-        parse_nucleotide_constraints(args.codon, require_codon=True)
     if getattr(args, "amino", None) is not None:
         parse_index_value_pairs(args.amino, "amino")
     if getattr(args, "cds_amino", None) is not None:
         cds_amino_constraints(args.cds_amino, require_cai=cai is not None)
-
-    legacy_mode = getattr(args, "mode", None)
-    if legacy_mode is not None:
-        warnings.warn(
-            "--mode is deprecated; constraint flags now select the sampling strategy",
-            FutureWarning,
-            stacklevel=2,
-        )
-        expected_kind = "nucleotide" if legacy_mode == "codon" else "amino"
-        actual_kind = _constraint_kind(args)
-        if actual_kind != expected_kind:
-            expected_option = "--codon/--nucleotide" if legacy_mode == "codon" else "--amino"
-            raise ValueError(f"legacy --mode {legacy_mode} requires {expected_option}")
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -418,17 +330,10 @@ def _load_checkpoint(path: Path) -> dict[str, Any]:
 
 def build_diffusion(args: argparse.Namespace, device: torch.device):
     diffusion = build_mcml_diffusion(condition_weight=args.cond_weight)
-    checkpoint = _load_checkpoint(Path(args.checkpoint))
+    checkpoint_path = resolve_mcml_checkpoint_path(args.checkpoint)
+    checkpoint = _load_checkpoint(checkpoint_path)
 
-    if args.checkpoint_weights == "auto":
-        ema_state = checkpoint.get("ema_model")
-        state_key = (
-            "ema_model"
-            if isinstance(ema_state, Mapping) and len(ema_state) > 0
-            else "model"
-        )
-    else:
-        state_key = "ema_model" if args.checkpoint_weights == "ema" else "model"
+    state_key = MCML_CHECKPOINT_STATE
     if state_key not in checkpoint:
         raise KeyError(f"checkpoint does not contain requested state {state_key!r}")
     state = checkpoint[state_key]
@@ -439,13 +344,13 @@ def build_diffusion(args: argparse.Namespace, device: torch.device):
     diffusion = diffusion.to(device)
     diffusion.eval()
     epoch = checkpoint.get("epoch", "unknown")
-    print(f"[model] loaded {state_key} weights from epoch {epoch}: {args.checkpoint}")
+    print(f"[model] loaded {state_key} weights from epoch {epoch}: {checkpoint_path}")
     return diffusion
 
 
 def decode_samples(
     samples: Any,
-    targets: list[list[float]],
+    target: list[float],
     batch_size: int,
     cai: float | None = None,
 ) -> list[dict[str, Any]]:
@@ -459,37 +364,35 @@ def decode_samples(
         samples = samples.detach().cpu().numpy()
     if samples is None or getattr(samples, "ndim", None) != 4:
         raise ValueError("sampler result must have shape [batch, 1, 4, 50]")
-    expected_count = len(targets) * batch_size
-    if tuple(samples.shape[1:]) != (1, 4, SEQUENCE_LENGTH) or samples.shape[0] != expected_count:
+    if tuple(samples.shape[1:]) != (1, 4, SEQUENCE_LENGTH) or samples.shape[0] != batch_size:
         raise ValueError(
             f"unexpected sampler shape {tuple(samples.shape)}; expected "
-            f"({expected_count}, 1, 4, {SEQUENCE_LENGTH})"
+            f"({batch_size}, 1, 4, {SEQUENCE_LENGTH})"
         )
 
     bases = "ACGT"
     records: list[dict[str, Any]] = []
-    for target_index, (target_mrl, target_mfe) in enumerate(targets):
-        for sample_index in range(batch_size):
-            matrix = samples[target_index * batch_size + sample_index, 0]
-            sequence = "".join(bases[index] for index in matrix.argmax(axis=0))
-            target_parts: list[str] = []
-            if math.isfinite(target_mrl):
-                target_parts.append(f"mrl_{target_mrl}")
-            if math.isfinite(target_mfe):
-                target_parts.append(f"mfe_{target_mfe}")
-            if cai is not None:
-                target_parts.append(f"cai_{cai}")
-            target_name = "_".join(target_parts) if target_parts else "no_mrl_mfe"
-            record_id = f"_{target_name}_idx_{sample_index}"
-            records.append(
-                {
-                    "ID": record_id,
-                    "Sequence": sequence,
-                    "target_MRL": target_mrl,
-                    "target_MFE": target_mfe,
-                    "sample_index": sample_index,
-                }
-            )
+    target_mrl, target_mfe = target
+    for sample_index in range(batch_size):
+        matrix = samples[sample_index, 0]
+        sequence = "".join(bases[index] for index in matrix.argmax(axis=0))
+        target_parts: list[str] = []
+        if math.isfinite(target_mrl):
+            target_parts.append(f"mrl_{target_mrl}")
+        if math.isfinite(target_mfe):
+            target_parts.append(f"mfe_{target_mfe}")
+        if cai is not None:
+            target_parts.append(f"cai_{cai}")
+        target_name = "_".join(target_parts) if target_parts else "unconditional"
+        records.append(
+            {
+                "ID": f"_{target_name}_idx_{sample_index}",
+                "Sequence": sequence,
+                "target_MRL": target_mrl,
+                "target_MFE": target_mfe,
+                "sample_index": sample_index,
+            }
+        )
     return records
 
 
@@ -502,11 +405,11 @@ def write_fasta(records: list[dict[str, Any]], output_path: Path) -> None:
     print(f"[saved] {output_path}")
 
 
-def generate_samples(args: argparse.Namespace, diffusion, targets: list[list[float]]):
+def generate_samples(args: argparse.Namespace, diffusion, target: list[float]):
     constraint_kind = _constraint_kind(args)
     if constraint_kind is None:
         labels = torch.tensor(
-            targets,
+            [target],
             dtype=torch.float32,
             device=diffusion.device,
         ).repeat_interleave(args.batch_size, dim=0)
@@ -518,18 +421,13 @@ def generate_samples(args: argparse.Namespace, diffusion, targets: list[list[flo
         )
 
     if constraint_kind == "nucleotide":
-        legacy_codons = getattr(args, "codon", None)
-        items = args.nucleotide if getattr(args, "nucleotide", None) is not None else legacy_codons
-        positions, sequences = parse_nucleotide_constraints(
-            items,
-            require_codon=legacy_codons is not None,
-        )
+        positions, sequences = parse_nucleotide_constraints(args.nucleotide)
         repaint = Repaint_Codon_MCML(
             diffusion=diffusion,
             sample_bs=args.batch_size,
             seq_len=SEQUENCE_LENGTH,
             cond_weight=args.cond_weight,
-            tgt_labels=targets,
+            tgt_labels=[target],
             return_all=False,
         )
         ground_truth, mask = bulid_gt_and_mask_from_codons(
@@ -546,7 +444,7 @@ def generate_samples(args: argparse.Namespace, diffusion, targets: list[list[flo
             sample_bs=args.batch_size,
             seq_len=SEQUENCE_LENGTH,
             cond_weight=args.cond_weight,
-            tgt_labels=targets,
+            tgt_labels=[target],
             return_all=False,
         )
         repaint.setup(amino_list=amino_acids, pos_list=positions)
@@ -561,13 +459,13 @@ def generate_samples(args: argparse.Namespace, diffusion, targets: list[list[flo
         "sample_bs": args.batch_size,
         "seq_len": SEQUENCE_LENGTH,
         "cond_weight": args.cond_weight,
-        "tgt_labels": targets,
+        "tgt_labels": [target],
         "return_all": False,
     }
     if args.cai is not None:
         repaint_kwargs.update(
             strategy="specific_adaptiveness",
-            gamma_for_usage_frequency=args.gamma,
+            gamma_for_usage_frequency=MCML_CAI_GAMMA,
         )
     repaint = Repaint_Amino_MCML(**repaint_kwargs)
     repaint.setup(
@@ -620,12 +518,7 @@ def verify_generated_constraints(
         return
 
     if constraint_kind == "nucleotide":
-        legacy_codons = getattr(args, "codon", None)
-        items = args.nucleotide if getattr(args, "nucleotide", None) is not None else legacy_codons
-        positions, expected_values = parse_nucleotide_constraints(
-            items,
-            require_codon=legacy_codons is not None,
-        )
+        positions, expected_values = parse_nucleotide_constraints(args.nucleotide)
 
         def is_valid(sequence: str) -> bool:
             normalized = sequence.upper().replace("U", "T")
@@ -772,15 +665,10 @@ def _summary_row(
     }
 
 
-def _same_target_value(left: float, right: float) -> bool:
-    return (math.isnan(left) and math.isnan(right)) or left == right
-
-
 def write_cai_outputs(
     records: list[dict[str, Any]],
     args: argparse.Namespace,
     fasta_path: Path,
-    targets: list[list[float]] | None = None,
 ) -> tuple[Path, Path, Path]:
     records, constraint = add_cai_measurements(records, args)
     detail_path = _derived_output_path(fasta_path, "_cai.csv")
@@ -793,19 +681,8 @@ def write_cai_outputs(
         writer.writeheader()
         writer.writerows(records)
 
-    summary_rows = [_summary_row(records, "overall", "all", "all")]
-    if targets is None:
-        targets = resolve_targets(args)
-    for target_mrl, target_mfe in targets:
-        selected = [
-            record
-            for record in records
-            if _same_target_value(float(record["target_MRL"]), target_mrl)
-            and _same_target_value(float(record["target_MFE"]), target_mfe)
-        ]
-        summary_rows.append(
-            _summary_row(selected, "target_condition", target_mrl, target_mfe)
-        )
+    target = resolve_conditioning_target(args)
+    summary_rows = [_summary_row(records, "design_condition", *target)]
     with summary_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(summary_rows[0]))
         writer.writeheader()
@@ -813,23 +690,23 @@ def write_cai_outputs(
 
     from src.plot.visualization import plot_cai_response
 
-    overall = summary_rows[0]
+    summary = summary_rows[0]
     plot_cai_response(
         records,
         args.cai,
         str(plot_path),
-        effective_reference=overall["effective_adaptiveness_geomean_reference"],
+        effective_reference=summary["effective_adaptiveness_geomean_reference"],
     )
     print(
         f"[CAI] target={args.cai:.4f}; "
-        f"peptide-valid achieved={overall['CAI_mean']:.4f} +/- {overall['CAI_std']:.4f}; "
-        f"range=[{overall['CAI_min']:.4f}, {overall['CAI_max']:.4f}]"
+        f"peptide-valid achieved={summary['CAI_mean']:.4f} +/- {summary['CAI_std']:.4f}; "
+        f"range=[{summary['CAI_min']:.4f}, {summary['CAI_max']:.4f}]"
     )
     print(
         f"[constraint] CDS amino suffix: start={constraint.start}, "
         f"peptide={constraint.peptide}, codons={list(constraint.codon_positions)}, "
-        f"preserved={overall['peptide_valid_count']}/{overall['n_sequences']} "
-        f"({overall['peptide_preservation_rate']:.1%})"
+        f"preserved={summary['peptide_valid_count']}/{summary['n_sequences']} "
+        f"({summary['peptide_preservation_rate']:.1%})"
     )
     print(f"[saved] {detail_path}")
     print(f"[saved] {summary_path}")
@@ -876,20 +753,20 @@ def run_evaluator(
 
 
 def design_utr(args: argparse.Namespace) -> list[dict[str, Any]]:
-    targets = resolve_targets(args)
-    validate_arguments(args, targets)
+    target = resolve_conditioning_target(args)
+    validate_arguments(args, target)
     ensure_outputs_available(args)
     device = resolve_device(args.device)
     seed_everything(args.seed)
     diffusion = build_diffusion(args, device)
-    samples = generate_samples(args, diffusion, targets)
-    records = decode_samples(samples, targets, args.batch_size, cai=args.cai)
+    samples = generate_samples(args, diffusion, target)
+    records = decode_samples(samples, target, args.batch_size, cai=args.cai)
     verify_generated_constraints(records, args)
 
     output_path = Path(args.out)
     write_fasta(records, output_path)
     if args.cai is not None:
-        write_cai_outputs(records, args, output_path, targets)
+        write_cai_outputs(records, args, output_path)
 
     if args.do_eval:
         output_csv = run_evaluator(

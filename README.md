@@ -51,10 +51,9 @@ python -m src.scripts.sample_mcml
 ```
 
 The second command is a post-training diagnostic: it reads
-`outputs/real_MRL_pred_MFE_260k_mcml/checkpoints/epoch_2000.pt`. For a freshly
-downloaded Hugging Face checkpoint at `checkpoints/mcml_epoch_2000.pt`, use the
-public `design_utr.py` interface below. The different public filename makes the
-MCML checkpoint distinguishable without renaming the completed training run.
+`outputs/real_MRL_pred_MFE_260k_mcml/checkpoints/epoch_2000.pt`. The public
+checkpoint is named `checkpoints/mcml_epoch_2000.pt` on Hugging Face so the MCML
+architecture is identifiable without renaming the completed training run.
 
 The released architecture is defined once in `src/models/mcml_config.py`:
 
@@ -73,12 +72,19 @@ For experiment reproducibility, the strategy historically named `euclidean`
 continues to use summed element-wise absolute distance (L1); it is not a
 squared Frobenius distance.
 
-Download the checkpoint from Hugging Face:
+By default, `design_utr.py` first reuses a repository-local
+`checkpoints/mcml_epoch_2000.pt` when one exists. Otherwise it downloads the
+pinned release from Hugging Face into the standard user cache (normally
+`~/.cache/huggingface/hub`). The Git repository never contains the 1.38 GB
+checkpoint.
+
+For an explicitly repository-local copy, run:
 
 ```bash
-mkdir -p checkpoints
-wget -O checkpoints/mcml_epoch_2000.pt \
-  https://huggingface.co/chuankai-dai/utr-diffusion-checkpoint/resolve/main/checkpoints/mcml_epoch_2000.pt
+hf download \
+  chuankai-dai/utr-diffusion-checkpoint \
+  checkpoints/mcml_epoch_2000.pt \
+  --local-dir .
 ```
 
 Expected SHA-256:
@@ -87,19 +93,25 @@ Expected SHA-256:
 7125d9aa94ac67a71801c26364ce9df517a150a2e19b282caf317c835ae73ba0
 ```
 
-`design_utr.py` loads the raw `model` state by default because that is the state
-used by the manuscript Evaluation 3 and Benchmark 2 scripts. The checkpoint
-also contains `ema_model`; select it explicitly with `--checkpoint-weights ema`
-(or use `auto` to prefer EMA when available).
+`design_utr.py` loads the raw `model` state used by the manuscript Evaluation 3
+and Benchmark 2 scripts. The checkpoint also retains `ema_model` for research
+use, but the public design CLI does not expose an alternative weight selector.
 
 ## Design examples
 
-MRL, MFE, and CAI are requested independently. Specify at least one of
-`--mrl`, `--mfe`, or `--cai`; providing both MRL and MFE performs joint
-multi-label conditioning, while providing only one uses the checkpoint's
-masked single-label conditioning. When MRL or MFE is supplied without a
-sequence constraint, this is ordinary conditional generation. A CAI-only run
-uses the model's no-MRL/no-MFE path together with the required CDS constraint.
+MRL, MFE, and CAI are requested independently. Providing both MRL and MFE
+performs joint multi-label conditioning, while providing only one uses the
+checkpoint's masked single-label conditioning. Omitting both labels selects
+the model's unconditional path. This can be used alone, with a sequence
+constraint, or with CAI plus its required CDS constraint.
+
+Unconditional generation:
+
+```bash
+python design_utr.py \
+  --out design_outputs/unconditional_demo.fasta \
+  --device cuda:0
+```
 
 Joint MRL/MFE conditioning:
 
@@ -107,7 +119,7 @@ Joint MRL/MFE conditioning:
 python design_utr.py \
   --mrl 8.0 \
   --mfe -2.0 \
-  --out outputs/mrl_mfe_demo.fasta \
+  --out design_outputs/mrl_mfe_demo.fasta \
   --device cuda:0
 ```
 
@@ -116,12 +128,12 @@ Single-label conditioning:
 ```bash
 python design_utr.py \
   --mrl 8.0 \
-  --out outputs/mrl_only_demo.fasta \
+  --out design_outputs/mrl_only_demo.fasta \
   --device cuda:0
 
 python design_utr.py \
   --mfe -20.0 \
-  --out outputs/mfe_only_demo.fasta \
+  --out design_outputs/mfe_only_demo.fasta \
   --device cuda:0
 ```
 
@@ -143,7 +155,7 @@ python design_utr.py \
   --mrl 4.0 \
   --mfe -20.0 \
   --nucleotide 8:CGCTCA 32:UCA \
-  --out outputs/nucleotide_demo.fasta \
+  --out design_outputs/nucleotide_demo.fasta \
   --device cuda:0
 ```
 
@@ -157,7 +169,7 @@ python design_utr.py \
   --mrl 8.0 \
   --mfe -2.0 \
   --amino 26:M 31:D 37:L \
-  --out outputs/amino_demo.fasta \
+  --out design_outputs/amino_demo.fasta \
   --device cuda:0
 ```
 
@@ -181,7 +193,7 @@ python design_utr.py \
   --mfe -2.0 \
   --cai 0.90 \
   --cds-amino MGKVKVGV \
-  --out outputs/cds_cai_090.fasta \
+  --out design_outputs/cds_cai_090.fasta \
   --device cuda:0
 ```
 
@@ -208,11 +220,12 @@ Each CAI run writes:
 - the requested FASTA file;
 - `*_cai.csv`, with observed sequence-level CAI, effective per-position α, and
   peptide-preservation checks;
-- `*_cai_summary.csv`, with peptide-valid overall and label-target CAI
-  summaries plus invalid counts; and
+- `*_cai_summary.csv`, with peptide-valid CAI statistics and invalid counts;
+  and
 - `*_cai.jpg`, comparing achieved CAI with the specified α value.
 
-The default codon-usage weighting strength is `--gamma 0.04`.
+The codon-usage weighting strength is fixed at `0.04` in
+`src/models/mcml_config.py` for reproducibility.
 
 ## Optional MRL/MFE evaluation
 
@@ -224,7 +237,7 @@ python design_utr.py \
   --mfe -2.0 \
   --cai 0.90 \
   --cds-amino MGKVKVGV \
-  --out outputs/cds_cai_090.fasta \
+  --out design_outputs/cds_cai_090.fasta \
   --do-eval \
   --device cuda:0
 ```
@@ -240,25 +253,21 @@ peptide constraint.
 | `--mrl` | Requested MRL label; usable alone or with MFE/CAI |
 | `--mfe` | Requested MFE label; usable alone or with MRL/CAI |
 | `--cai` | Requested codon relative-adaptiveness target; requires `--cds-amino` |
-| `--checkpoint` | MCML checkpoint; default `checkpoints/mcml_epoch_2000.pt` |
-| `--checkpoint-weights` | `model` (paper default), `ema`, or `auto` (EMA preferred) |
+| `--checkpoint` | Optional local checkpoint override; otherwise use local release file or Hugging Face cache |
 | `--nucleotide` | One or more arbitrary-length `position:SEQUENCE` constraints |
 | `--amino` | One or more sparse `position:AA` constraints |
 | `--cds-amino` | Complete contiguous suffix peptide, beginning with M |
-| `--gamma` | Codon-usage weighting strength |
-| `--batch-size` | Number of sequences generated for the requested label target(s) |
+| `--batch-size` | Number of sequences generated for the requested condition |
 | `--do-eval` | Run bundled MRL/MFE evaluation and plots |
 | `--device` | PyTorch device such as `cuda:0` or `cpu` |
 | `--force` | Explicitly allow replacement of existing output files |
-| `--targets` | Advanced batch form for one or more joint `MRL,MFE` pairs |
 
 Run `python design_utr.py --help` for the complete interface.
 
-Existing commands using `--mode codon|amino` or `--codon` remain accepted for
-one transition release and print a deprecation warning. `--targets` remains a
-supported advanced interface because it generates several joint MRL/MFE target
-pairs in one run. Existing outputs are never replaced silently; pass `--force`
-when replacement is intentional.
+Existing outputs are never replaced silently; pass `--force` only when
+replacement is intentional. All default demo outputs are kept under
+`design_outputs/`, separate from training and benchmark results under
+`outputs/`.
 
 ## Licensing note
 

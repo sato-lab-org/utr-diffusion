@@ -24,6 +24,7 @@ conda_env/
 # --- Repository-local data & experiment artifacts (大文件) ---
 /data/
 /outputs/
+/design_outputs/
 /checkpoints/
 /runs/
 /logs/
