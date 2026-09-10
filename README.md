@@ -249,6 +249,10 @@ python design_utr.py \
   --device cuda:0
 ```
 
+The evaluator path is fixed to `evaluation/evaluate.py`, and it uses the
+repository's bundled `evaluation/Model/model.pt`. These files do not require
+command-line path settings.
+
 This additionally writes a CSV with predicted MRL/MFE values and a
 `*_dist.jpg` distribution plot. A single MRL or MFE condition is shown as a
 one-dimensional violin plot for that predicted label, with its requested
@@ -272,14 +276,12 @@ evaluator also writes its corresponding diversity/entropy plot.
 | `--batch-size` | Number of sequences generated for the requested condition |
 | `--do-eval` | Run bundled MRL/MFE evaluation and plots |
 | `--device` | PyTorch device such as `cuda:0` or `cpu` |
-| `--force` | Explicitly allow replacement of existing output files |
 
 Run `python design_utr.py --help` for the complete interface.
 
-Existing outputs are never replaced silently; pass `--force` only when
-replacement is intentional. All default demo outputs are kept under
-`design_outputs/`, separate from training and benchmark results under
-`outputs/`.
+Existing output files with the same names are replaced automatically. All
+default demo outputs are kept under `design_outputs/`, separate from training
+and benchmark results under `outputs/`.
 
 ## Licensing note
 

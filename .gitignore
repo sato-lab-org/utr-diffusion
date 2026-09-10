@@ -41,6 +41,7 @@ conda_env/
 
 # --- Model / large binary files ---
 *.pt
+!/evaluation/Model/model.pt
 *.pth
 *.ckpt
 *.h5

@@ -52,6 +52,9 @@ class DesignUtrTests(unittest.TestCase):
             "--gamma",
             "--checkpoint-weights",
             "--eval-repo",
+            "--eval-dir",
+            "--eval-model",
+            "--force",
             "--layout",
             "--preset",
             "--peptide",
@@ -59,24 +62,31 @@ class DesignUtrTests(unittest.TestCase):
             self.assertNotIn(removed_option, help_text)
             self.assertNotIn(removed_option, parser._option_string_actions)
 
-    def test_evaluator_helper_keeps_legacy_positional_signature(self):
+    def test_evaluator_uses_fixed_repository_files(self):
         parameters = inspect.signature(design_utr.run_evaluator).parameters
-        self.assertEqual(
-            list(parameters),
-            [
-                "fasta_path",
-                "eval_dir",
-                "eval_script",
-                "device",
-                "model_path",
-                "batch_toks",
-                "seed",
-                "mfe_batch",
-            ],
-        )
-        self.assertEqual(parameters["eval_script"].default, "evaluate.py")
+        self.assertEqual(list(parameters), ["fasta_path", "device", "batch_toks", "seed", "mfe_batch"])
         self.assertEqual(parameters["device"].default, "cpu")
-        self.assertEqual(parameters["model_path"].default, "Model/model.pt")
+        project_dir = Path(design_utr.__file__).resolve().parent
+        self.assertEqual(design_utr.EVALUATION_DIR, project_dir / "evaluation")
+        self.assertEqual(design_utr.EVALUATION_SCRIPT, project_dir / "evaluation" / "evaluate.py")
+        self.assertEqual(design_utr.EVALUATION_MODEL, project_dir / "evaluation" / "Model" / "model.pt")
+        self.assertTrue(design_utr.EVALUATION_SCRIPT.is_file())
+        self.assertTrue(design_utr.EVALUATION_MODEL.is_file())
+
+    def test_run_evaluator_passes_fixed_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fasta_path = Path(temp_dir) / "design.fasta"
+            fasta_path.write_text(">sequence_0\n" + "A" * 50 + "\n", encoding="utf-8")
+
+            with patch.object(design_utr.subprocess, "run") as run:
+                output_csv = design_utr.run_evaluator(fasta_path, device="cpu")
+
+            command = run.call_args.args[0]
+            self.assertEqual(command[1], str(design_utr.EVALUATION_SCRIPT))
+            self.assertEqual(command[command.index("--model") + 1], str(design_utr.EVALUATION_MODEL))
+            self.assertEqual(run.call_args.kwargs["cwd"], design_utr.EVALUATION_DIR)
+            self.assertTrue(run.call_args.kwargs["check"])
+            self.assertEqual(output_csv, str(fasta_path.with_suffix(".csv")))
 
     def test_checkpoint_override_is_optional(self):
         args = design_utr.build_parser().parse_args([])
@@ -331,22 +341,6 @@ class DesignUtrTests(unittest.TestCase):
         self.assertIsNone(measured[0]["effective_adaptiveness_geomean_reference"])
         self.assertEqual(measured[0]["n_effective_adaptiveness_clipped"], 0)
 
-    def test_cds_without_alpha_plans_cai_detail_summary_and_plot(self):
-        args = self.parse_and_validate(
-            "--mrl",
-            "8",
-            "--cds-amino",
-            "MG",
-            "--out",
-            "design_outputs/demo.fasta",
-        )
-
-        paths = design_utr.planned_output_paths(args)
-
-        self.assertIn(Path("design_outputs/demo_cai.csv"), paths)
-        self.assertIn(Path("design_outputs/demo_cai_summary.csv"), paths)
-        self.assertIn(Path("design_outputs/demo_cai.jpg"), paths)
-
     def test_cds_without_alpha_writes_cai_outputs_without_fake_reference(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "cds.fasta"
@@ -437,17 +431,15 @@ class DesignUtrTests(unittest.TestCase):
         self.assertIn("cai_0.9", records[0]["ID"])
         self.assertNotIn("unconditioned", records[0]["ID"])
 
-    def test_existing_outputs_require_force(self):
+    def test_write_fasta_overwrites_existing_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "design.fasta"
             output.write_text("existing", encoding="utf-8")
-            args = self.parse_and_validate("--mrl", "8", "--out", str(output))
+            records = [{"ID": "new_sequence", "Sequence": "ACGT"}]
 
-            with self.assertRaisesRegex(FileExistsError, "--force"):
-                design_utr.ensure_outputs_available(args)
+            design_utr.write_fasta(records, output)
 
-            args.force = True
-            design_utr.ensure_outputs_available(args)
+            self.assertEqual(output.read_text(encoding="utf-8"), ">new_sequence\nACGT\n")
 
     def test_decoded_nucleotide_constraints_are_verified(self):
         args = self.parse_and_validate(

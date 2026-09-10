@@ -44,6 +44,10 @@ from src.models.repaint.utils import (
 SEQUENCE_LENGTH = 50
 DNA_BASES = frozenset("ACGT")
 STANDARD_AMINO_ACIDS = frozenset("ACDEFGHIKLMNPQRSTVWY")
+PROJECT_DIR = Path(__file__).resolve().parent
+EVALUATION_DIR = PROJECT_DIR / "evaluation"
+EVALUATION_SCRIPT = EVALUATION_DIR / "evaluate.py"
+EVALUATION_MODEL = EVALUATION_DIR / "Model" / "model.pt"
 
 
 @dataclass(frozen=True)
@@ -64,85 +68,36 @@ class CdsAminoConstraint:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Design 50-nt sequences with optional MRL, MFE, and CAI targets, "
-            "plus nucleotide, sparse amino-acid, or CDS amino-acid constraints."
-        )
-    )
+    parser = argparse.ArgumentParser(description="Design 50-nt sequences with optional MRL, MFE, and CAI targets, plus nucleotide, sparse amino-acid, or CDS amino-acid constraints.")
     parser.add_argument(
         "--checkpoint",
         type=Path,
         default=None,
-        help=(
-            "Optional local MCML checkpoint (.pt). If omitted, use the repository-local "
-            "checkpoint when present, otherwise download it to the Hugging Face cache."
-        ),
+        help="Optional local MCML checkpoint (.pt). If omitted, use the repository-local checkpoint when present, otherwise download it to the Hugging Face cache.",
     )
     parser.add_argument("--mrl", type=float, help="Target MRL.")
     parser.add_argument("--mfe", type=float, help="Target MFE.")
-    parser.add_argument(
-        "--cai",
-        type=float,
-        help=(
-            "Target codon relative-adaptiveness alpha in (0,1]. Requires "
-            "--cds-amino; achieved sequence CAI is reported after generation."
-        ),
-    )
+    parser.add_argument("--cai", type=float, help="Target codon relative-adaptiveness alpha in (0,1]. Requires --cds-amino; achieved sequence CAI is reported after generation.")
     constraint_group = parser.add_mutually_exclusive_group()
     constraint_group.add_argument(
         "--nucleotide",
         nargs="+",
         metavar="POS:SEQ",
-        help=(
-            "Exact nucleotide subsequences at 0-based starts; sequences may have "
-            "arbitrary length, for example: --nucleotide 2:A 8:AGC 20:GGACU."
-        ),
+        help="Exact nucleotide subsequences at 0-based starts; sequences may have arbitrary length, for example: --nucleotide 2:A 8:AGC 20:GGACU.",
     )
-    constraint_group.add_argument(
-        "--amino",
-        nargs="+",
-        metavar="POS:AA",
-        help="Sparse amino-acid constraints, for example: --amino 26:M 31:D 37:L.",
-    )
+    constraint_group.add_argument("--amino", nargs="+", metavar="POS:AA", help="Sparse amino-acid constraints, for example: --amino 26:M 31:D 37:L.")
     constraint_group.add_argument(
         "--cds-amino",
         metavar="PEPTIDE",
-        help=(
-            "Complete suffix-filling CDS peptide including the initial M. Its "
-            "0-based start is inferred as 50 - 3 * peptide length; achieved "
-            "sequence CAI statistics are reported."
-        ),
+        help="Complete suffix-filling CDS peptide including the initial M. Its 0-based start is inferred as 50 - 3 * peptide length; achieved sequence CAI statistics are reported.",
     )
 
-    parser.add_argument(
-        "--out",
-        default="design_outputs/design_utr.fasta",
-        help="Output FASTA path; supported suffixes are .fasta, .fa, and .fna.",
-    )
+    parser.add_argument("--out", default="design_outputs/design_utr.fasta", help="Output FASTA path; supported suffixes are .fasta, .fa, and .fna.")
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--cond-weight", type=float, default=4.0)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--device", default="cuda:0", help="cpu, cuda, cuda:0, ...")
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help=(
-            "Overwrite existing FASTA, CSV, and plot files; without this flag "
-            "the run stops before loading the model."
-        ),
-    )
-    parser.add_argument(
-        "--do-eval",
-        action="store_true",
-        help="Run the bundled evaluator and create MRL/MFE and constraint plots.",
-    )
-    parser.add_argument(
-        "--eval-dir",
-        default="evaluation",
-        help="Directory containing evaluate.py (default: evaluation).",
-    )
-    parser.add_argument("--eval-model", default="Model/model.pt")
+    parser.add_argument("--do-eval", action="store_true", help="Run the bundled evaluator and create MRL/MFE and constraint plots.")
     return parser
 
 
@@ -168,9 +123,7 @@ def resolve_conditioning_target(args: argparse.Namespace) -> list[float]:
     ]
 
 
-def parse_index_value_pairs(
-    items: list[str], value_name: str
-) -> tuple[list[int], list[str]]:
+def parse_index_value_pairs(items: list[str], value_name: str) -> tuple[list[int], list[str]]:
     positions: list[int] = []
     values: list[str] = []
     for item in items:
@@ -272,9 +225,7 @@ def _constraint_kind(args: argparse.Namespace) -> str | None:
     return None
 
 
-def validate_arguments(
-    args: argparse.Namespace, target: list[float] | None = None
-) -> None:
+def validate_arguments(args: argparse.Namespace, target: list[float] | None = None) -> None:
     output_suffix = Path(args.out).suffix.lower()
     if output_suffix not in {".fasta", ".fa", ".fna"}:
         raise ValueError("--out must end in .fasta, .fa, or .fna")
@@ -479,37 +430,7 @@ def _derived_output_path(fasta_path: Path, suffix: str) -> Path:
     return fasta_path.with_name(f"{fasta_path.stem}{suffix}")
 
 
-def planned_output_paths(args: argparse.Namespace) -> list[Path]:
-    """Return every file the requested run may replace."""
-
-    fasta_path = Path(args.out)
-    paths = [fasta_path]
-    if getattr(args, "cds_amino", None) is not None:
-        paths.extend(
-            _derived_output_path(fasta_path, suffix)
-            for suffix in ("_cai.csv", "_cai_summary.csv", "_cai.jpg")
-        )
-    if getattr(args, "do_eval", False):
-        paths.extend(
-            (fasta_path.with_suffix(".csv"), _derived_output_path(fasta_path, "_dist.jpg"))
-        )
-        if _constraint_kind(args) is not None:
-            paths.append(_derived_output_path(fasta_path, "_constraint.jpg"))
-    return list(dict.fromkeys(paths))
-
-
-def ensure_outputs_available(args: argparse.Namespace) -> None:
-    existing = [path for path in planned_output_paths(args) if path.exists()]
-    if existing and not getattr(args, "force", False):
-        formatted = ", ".join(str(path) for path in existing)
-        raise FileExistsError(
-            f"refusing to overwrite existing output(s): {formatted}; use --force to replace them"
-        )
-
-
-def verify_generated_constraints(
-    records: list[dict[str, Any]], args: argparse.Namespace
-) -> None:
+def verify_generated_constraints(records: list[dict[str, Any]], args: argparse.Namespace) -> None:
     """Fail closed if decoded sequences do not preserve requested constraints."""
 
     constraint_kind = _constraint_kind(args)
@@ -550,9 +471,7 @@ def verify_generated_constraints(
         )
 
 
-def add_cai_measurements(
-    records: list[dict[str, Any]], args: argparse.Namespace
-) -> tuple[list[dict[str, Any]], CdsAminoConstraint]:
+def add_cai_measurements(records: list[dict[str, Any]], args: argparse.Namespace) -> tuple[list[dict[str, Any]], CdsAminoConstraint]:
     constraint = cds_amino_constraints(args.cds_amino)
     positions = list(constraint.codon_positions)
     cai_positions = list(constraint.cai_positions)
@@ -568,9 +487,7 @@ def add_cai_measurements(
             target_adaptiveness,
             return_effective_targets=True,
         )
-        effective_by_position = [
-            effective_by_amino[amino] for amino in expected_downstream
-        ]
+        effective_by_position = [effective_by_amino[amino] for amino in expected_downstream]
         effective_description = ";".join(
             f"{position}:{amino}={effective:.6f}"
             for position, amino, effective in zip(
@@ -649,12 +566,8 @@ def _summary_row(
         "target_MFE": target_mfe,
         "requested_adaptiveness": records[0]["requested_adaptiveness"],
         "effective_adaptiveness_by_codon": records[0]["effective_adaptiveness_by_codon"],
-        "effective_adaptiveness_geomean_reference": records[0][
-            "effective_adaptiveness_geomean_reference"
-        ],
-        "n_effective_adaptiveness_clipped": records[0][
-            "n_effective_adaptiveness_clipped"
-        ],
+        "effective_adaptiveness_geomean_reference": records[0]["effective_adaptiveness_geomean_reference"],
+        "n_effective_adaptiveness_clipped": records[0]["n_effective_adaptiveness_clipped"],
         "n_sequences": len(records),
         "n_with_observed_CAI": len(observed_values),
         "n_with_CAI": len(values),
@@ -727,28 +640,19 @@ def write_cai_outputs(
     return detail_path, summary_path, plot_path
 
 
-def run_evaluator(
-    fasta_path: str | Path,
-    eval_dir: str | Path = "evaluation",
-    eval_script: str = "evaluate.py",
-    device: str = "cpu",
-    model_path: str = "Model/model.pt",
-    batch_toks: int = 4096 * 8,
-    seed: int = 1337,
-    mfe_batch: int = 100,
-) -> str:
+def run_evaluator(fasta_path: str | Path, device: str = "cpu", batch_toks: int = 4096 * 8, seed: int = 1337, mfe_batch: int = 100) -> str:
     fasta_path = Path(fasta_path).resolve()
-    eval_dir = Path(eval_dir).resolve()
-    eval_path = eval_dir / eval_script
-    if not eval_path.is_file():
-        raise FileNotFoundError(f"evaluator not found: {eval_path}")
+    if not EVALUATION_SCRIPT.is_file():
+        raise FileNotFoundError(f"evaluator not found: {EVALUATION_SCRIPT}")
+    if not EVALUATION_MODEL.is_file():
+        raise FileNotFoundError(f"evaluation model not found: {EVALUATION_MODEL}")
     command = [
         sys.executable,
-        eval_script,
+        str(EVALUATION_SCRIPT),
         "--fasta",
         str(fasta_path),
         "--model",
-        model_path,
+        str(EVALUATION_MODEL),
         "--device",
         device,
         "--batch-toks",
@@ -759,7 +663,7 @@ def run_evaluator(
         str(mfe_batch),
     ]
     print("[eval] running:", " ".join(command), flush=True)
-    subprocess.run(command, cwd=eval_dir, check=True)
+    subprocess.run(command, cwd=EVALUATION_DIR, check=True)
     output_csv = fasta_path.with_suffix(".csv")
     print(f"[eval] saved {output_csv}")
     return str(output_csv)
@@ -768,7 +672,6 @@ def run_evaluator(
 def design_utr(args: argparse.Namespace) -> list[dict[str, Any]]:
     target = resolve_conditioning_target(args)
     validate_arguments(args, target)
-    ensure_outputs_available(args)
     device = resolve_device(args.device)
     seed_everything(args.seed)
     diffusion = build_diffusion(args, device)
@@ -782,13 +685,7 @@ def design_utr(args: argparse.Namespace) -> list[dict[str, Any]]:
         write_cai_outputs(records, args, output_path)
 
     if args.do_eval:
-        output_csv = run_evaluator(
-            fasta_path=output_path,
-            eval_dir=Path(args.eval_dir),
-            device=args.device,
-            model_path=args.eval_model,
-            seed=args.seed,
-        )
+        output_csv = run_evaluator(fasta_path=output_path, device=args.device, seed=args.seed)
         from src.plot.visualization import read_csv_and_plot
 
         read_csv_and_plot(str(output_csv), args)
@@ -800,7 +697,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         design_utr(args)
-    except (FileExistsError, FileNotFoundError, KeyError, RuntimeError, ValueError) as error:
+    except (FileNotFoundError, KeyError, RuntimeError, ValueError) as error:
         parser.error(str(error))
 
 
