@@ -9,11 +9,12 @@ pytest.importorskip("logomaker")
 import src.plot.visualization as visualization  # noqa: E402
 from src.plot.visualization import (  # noqa: E402
     _amino_codon_counts_with_invalid,
-    _describe_targets,
+    _describe_conditions,
     _derived_plot_path,
     _expanded_axis_limits,
     _finite_target_pairs,
-    _normalise_target_pairs,
+    _normalise_conditions,
+    _scatter_target_pairs,
 )
 
 
@@ -48,21 +49,39 @@ def test_scatter_limits_expand_to_include_out_of_range_targets():
 
 
 @pytest.mark.parametrize(
-    ("mrl", "mfe", "expected_pair", "expected_description"),
+    ("mrl", "mfe", "cai", "expected", "expected_description", "scatter_targets"),
     [
-        (8.0, None, [8.0, np.nan], "MRL-only target MRL=8"),
-        (None, -20.0, [np.nan, -20.0], "MFE-only target MFE=-20"),
-        (8.0, -2.0, [8.0, -2.0], "target MRL=8, MFE=-2"),
-        (None, None, [np.nan, np.nan], "MRL/MFE-unconditioned generation"),
+        (8.0, None, None, {"mrl": 8.0}, "MRL=8", []),
+        (None, -20.0, None, {"mfe": -20.0}, "MFE=-20", []),
+        (
+            8.0,
+            -2.0,
+            None,
+            {"mrl": 8.0, "mfe": -2.0},
+            "MRL=8, MFE=-2",
+            [[8.0, -2.0]],
+        ),
+        (None, None, None, {}, "unconditional generation", []),
+        (None, None, 0.9, {"cai": 0.9}, "CAI-control alpha=0.9", []),
+        (
+            8.0,
+            -2.0,
+            0.9,
+            {"mrl": 8.0, "mfe": -2.0, "cai": 0.9},
+            "MRL=8, MFE=-2, CAI-control alpha=0.9",
+            [[8.0, -2.0]],
+        ),
     ],
 )
-def test_explicit_targets_support_single_label_and_unconditioned_titles(
-    mrl, mfe, expected_pair, expected_description
+def test_conditions_omit_missing_values_and_include_cai(
+    mrl, mfe, cai, expected, expected_description, scatter_targets
 ):
-    pairs = _normalise_target_pairs(SimpleNamespace(mrl=mrl, mfe=mfe))
+    conditions = _normalise_conditions(SimpleNamespace(mrl=mrl, mfe=mfe, cai=cai))
 
-    np.testing.assert_equal(pairs[0], expected_pair)
-    assert _describe_targets(pairs) == expected_description
+    assert conditions == expected
+    assert _describe_conditions(conditions) == expected_description
+    assert _scatter_target_pairs(conditions) == scatter_targets
+    assert "nan" not in expected_description.lower()
 
 
 def test_only_complete_target_pairs_are_drawable():
@@ -97,8 +116,17 @@ def _plot_args(tmp_path, **overrides):
     return SimpleNamespace(**values)
 
 
-def test_read_csv_and_plot_uses_single_label_title_without_nan_target_point(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("mrl", "mfe", "cai", "expected_condition"),
+    [
+        (8.0, None, None, "MRL=8"),
+        (None, -20.0, None, "MFE=-20"),
+        (None, None, None, "unconditional generation"),
+        (None, None, 0.9, "CAI-control alpha=0.9"),
+    ],
+)
+def test_read_csv_and_plot_omits_missing_conditions_and_target_point(
+    tmp_path, monkeypatch, mrl, mfe, cai, expected_condition
 ):
     calls = {}
     monkeypatch.setattr(
@@ -109,12 +137,40 @@ def test_read_csv_and_plot_uses_single_label_title_without_nan_target_point(
 
     visualization.read_csv_and_plot(
         _write_plot_input(tmp_path),
-        _plot_args(tmp_path, mrl=8.0, mfe=None),
+        _plot_args(tmp_path, mrl=mrl, mfe=mfe, cai=cai),
     )
 
-    assert "MRL-only target MRL=8" in calls["title"]
-    assert np.isnan(calls["targets"][0][1])
-    assert _finite_target_pairs(calls["targets"]) == []
+    assert calls["title"] == (
+        "MRL-MFE Distribution of Generated Sequences(n=2)\n"
+        f"Condition: {expected_condition}"
+    )
+    assert calls["targets"] == []
+    assert "nan" not in calls["title"].lower()
+
+
+def test_cai_plot_condition_label_includes_alpha_for_cai_only(tmp_path, monkeypatch):
+    seen_conditions = []
+    describe_conditions = visualization._describe_conditions
+
+    def capture_conditions(conditions):
+        seen_conditions.append(dict(conditions))
+        return describe_conditions(conditions)
+
+    monkeypatch.setattr(visualization, "_describe_conditions", capture_conditions)
+    visualization.plot_cai_response(
+        records=[
+            {
+                "target_MRL": float("nan"),
+                "target_MFE": float("nan"),
+                "CAI": 0.85,
+                "peptide_valid": True,
+            }
+        ],
+        target_adaptiveness=0.9,
+        savepath=tmp_path / "cai.jpg",
+    )
+
+    assert seen_conditions == [{"cai": 0.9}]
 
 
 def test_read_csv_and_plot_passes_arbitrary_nucleotide_regions(
@@ -134,7 +190,10 @@ def test_read_csv_and_plot_passes_arbitrary_nucleotide_regions(
     )
 
     assert calls["nucleotide_regions"] == [(8, 4), (20, 1)]
-    assert calls["title"] == "Nucleotide Constraints: 8:AGCU 20:A"
+    assert calls["title"] == (
+        "Nucleotide Constraints: 8:AGCU 20:A\n"
+        "Condition: MRL=8, MFE=-2"
+    )
 
 
 def test_read_csv_and_plot_preserves_sparse_amino_positions(tmp_path, monkeypatch):
@@ -153,6 +212,10 @@ def test_read_csv_and_plot_preserves_sparse_amino_positions(tmp_path, monkeypatc
 
     assert calls["amino"] == ["M", "D", "L"]
     assert calls["amino_pos"] == [26, 31, 37]
+    assert calls["title"] == (
+        "Amino-acid Constraints: 26:M 31:D 37:L\n"
+        "Condition: MRL=8, MFE=-2"
+    )
 
 
 def test_read_csv_and_plot_derives_cds_amino_tail_positions(tmp_path, monkeypatch):
@@ -171,4 +234,7 @@ def test_read_csv_and_plot_derives_cds_amino_tail_positions(tmp_path, monkeypatc
 
     assert calls["amino"] == list("MGKVKVGV")
     assert calls["amino_pos"] == [26, 29, 32, 35, 38, 41, 44, 47]
-    assert "Requested codon relative adaptiveness alpha=0.9" in calls["title"]
+    assert calls["title"] == (
+        "CDS Amino-acid Constraint: MGKVKVGV\n"
+        "Condition: MRL=8, MFE=-2, CAI-control alpha=0.9"
+    )

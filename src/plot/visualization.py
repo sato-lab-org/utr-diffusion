@@ -73,19 +73,32 @@ def _expanded_axis_limits(values, baseline):
     return lower - padding, upper + padding
 
 
-def _normalise_target_pairs(args):
-    """Return the conditioning target as a single ``[MRL, MFE]`` pair.
+def _normalise_conditions(args):
+    """Return only the design conditions explicitly supplied by the user.
 
-    Missing labels are represented by NaN so the plotting layer mirrors the
-    masked-label representation used by MCML.
+    NaN is useful inside MCML for masked labels, but it has no place in the
+    plotting interface.  Keeping the conditions as named values also lets the
+    same formatter describe MRL, MFE, and CAI-control runs.
     """
 
-    mrl = getattr(args, "mrl", None)
-    mfe = getattr(args, "mfe", None)
-    return [[
-        float(mrl) if mrl is not None else float("nan"),
-        float(mfe) if mfe is not None else float("nan"),
-    ]]
+    conditions = {}
+    for name in ("mrl", "mfe", "cai"):
+        raw_value = getattr(args, name, None)
+        if raw_value is None:
+            continue
+        value = float(raw_value)
+        if not math.isfinite(value):
+            raise ValueError(f"{name.upper()} plotting condition must be finite")
+        conditions[name] = value
+    return conditions
+
+
+def _scatter_target_pairs(conditions):
+    """Return a drawable MRL/MFE point only when both axes were specified."""
+
+    if "mrl" in conditions and "mfe" in conditions:
+        return [[conditions["mrl"], conditions["mfe"]]]
+    return []
 
 
 def _finite_target_pairs(targets):
@@ -98,23 +111,20 @@ def _finite_target_pairs(targets):
     ]
 
 
-def _describe_targets(targets):
-    """Create a human-readable conditioning description, including masks."""
+def _describe_conditions(conditions):
+    """Create a title-safe description without placeholder values."""
 
-    if not targets:
-        return "MRL/MFE-unconditioned generation"
-    if len(targets) != 1:
-        return f"{len(targets)} conditioning targets"
+    if not conditions:
+        return "unconditional generation"
 
-    target_mrl, target_mfe = (float(value) for value in targets[0])
-    has_mrl, has_mfe = np.isfinite(target_mrl), np.isfinite(target_mfe)
-    if has_mrl and has_mfe:
-        return f"target MRL={target_mrl:g}, MFE={target_mfe:g}"
-    if has_mrl:
-        return f"MRL-only target MRL={target_mrl:g}"
-    if has_mfe:
-        return f"MFE-only target MFE={target_mfe:g}"
-    return "MRL/MFE-unconditioned generation"
+    parts = []
+    if "mrl" in conditions:
+        parts.append(f"MRL={conditions['mrl']:g}")
+    if "mfe" in conditions:
+        parts.append(f"MFE={conditions['mfe']:g}")
+    if "cai" in conditions:
+        parts.append(f"CAI-control alpha={conditions['cai']:g}")
+    return ", ".join(parts)
 
 
 def _as_constraint_tokens(value):
@@ -279,7 +289,7 @@ def plot_amino_constraint_tripanel(seqs, amino, amino_pos, savepath=None, title=
     nrows = max(1, math.ceil(n_amino / ncols))
 
     fig = plt.figure(figsize=(figure_size[0], 5.0 + 1.8 * nrows))
-    fig.subplots_adjust(left=0.08, right=0.96, top=0.92, bottom=0.08)
+    fig.subplots_adjust(left=0.08, right=0.96, top=0.86, bottom=0.08)
     # === NEW: 3-row layout: LOGO → PIE → ENTROPY ===
     gs_outer = fig.add_gridspec(
         nrows=3,
@@ -428,7 +438,7 @@ def plot_codon_constraint_duopanel(
 
     # 3. Figure layout: 2 rows → LOGO + ENTROPY
     fig = plt.figure(figsize=figure_size)
-    fig.subplots_adjust(left=0.08, right=0.99, top=0.92, bottom=0.10)
+    fig.subplots_adjust(left=0.08, right=0.99, top=0.86, bottom=0.10)
 
     gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[1.0, 1.0], hspace=0.32)
 
@@ -562,6 +572,11 @@ def plot_cai_response(records, target_adaptiveness, savepath, effective_referenc
         offsets = np.linspace(-0.13, 0.13, len(grouped)) if len(grouped) > 1 else np.array([0.0])
         colors = plt.get_cmap("tab10")(np.linspace(0, 1, max(len(grouped), 1)))
         for offset, color, (_, row) in zip(offsets, colors, grouped.iterrows()):
+            group_conditions = {"cai": float(target_adaptiveness)}
+            for name, column in (("mrl", "target_MRL"), ("mfe", "target_MFE")):
+                value = float(row[column])
+                if np.isfinite(value):
+                    group_conditions[name] = value
             ax.scatter(
                 [offset],
                 [row["CAI"]],
@@ -569,9 +584,7 @@ def plot_cai_response(records, target_adaptiveness, savepath, effective_referenc
                 color=color,
                 edgecolor="black",
                 linewidth=0.4,
-                label=_describe_targets(
-                    [[row["target_MRL"], row["target_MFE"]]]
-                ),
+                label=_describe_conditions(group_conditions),
                 zorder=4,
             )
     ax.scatter(
@@ -623,15 +636,16 @@ def plot_cai_response(records, target_adaptiveness, savepath, effective_referenc
 def read_csv_and_plot(csv_file, args):
     data = pd.read_csv(csv_file)
     mrls, mfes = data['MRL'].to_numpy(), data['MFE'].to_numpy()
-    target_pairs = _normalise_target_pairs(args)
-    target_description = _describe_targets(target_pairs)
+    conditions = _normalise_conditions(args)
+    target_pairs = _scatter_target_pairs(conditions)
+    condition_line = f"Condition: {_describe_conditions(conditions)}"
     plot_MRL_MFE_scatter(
         mrls=mrls,
         mfes=mfes,
         savepath=_derived_plot_path(args.out, '_dist.jpg'),
         title=(
             f"MRL-MFE Distribution of Generated Sequences(n={len(data)})\n"
-            f"Condition: {target_description}"
+            f"{condition_line}"
         ),
         targets=target_pairs,
     )
@@ -661,7 +675,10 @@ def read_csv_and_plot(csv_file, args):
             seqs=seqs,
             nucleotide_regions=nucleotide_regions,
             savepath=_derived_plot_path(args.out, '_constraint.jpg'),
-            title=f"Nucleotide Constraints: {' '.join(nucleotide)}",
+            title=(
+                f"Nucleotide Constraints: {' '.join(nucleotide)}\n"
+                f"{condition_line}"
+            ),
         )
     elif amino:
         amino_pos = [int(token.split(":", 1)[0]) for token in amino]
@@ -671,7 +688,10 @@ def read_csv_and_plot(csv_file, args):
             amino=amino_list,
             amino_pos=amino_pos,
             savepath=_derived_plot_path(args.out, '_constraint.jpg'),
-            title=f"Amino-acid Constraints: {' '.join(amino)}",
+            title=(
+                f"Amino-acid Constraints: {' '.join(amino)}\n"
+                f"{condition_line}"
+            ),
         )
     elif cds_amino:
         peptide = str(cds_amino).strip().upper()
@@ -682,16 +702,13 @@ def read_csv_and_plot(csv_file, args):
                 "--cds-amino must contain 1-16 amino acids for a 50-nt sequence"
             )
         amino_pos = list(range(amino_start, 50, 3))
-        cai = getattr(args, "cai", None)
-        cai_description = (
-            f"\nRequested codon relative adaptiveness alpha={float(cai):g}"
-            if cai is not None
-            else ""
-        )
         plot_amino_constraint_tripanel(
             seqs=seqs,
             amino=amino_list,
             amino_pos=amino_pos,
             savepath=_derived_plot_path(args.out, '_constraint.jpg'),
-            title=f"CDS Amino-acid Constraint: {peptide}{cai_description}",
+            title=(
+                f"CDS Amino-acid Constraint: {peptide}\n"
+                f"{condition_line}"
+            ),
         )
