@@ -179,8 +179,9 @@ python design_utr.py \
 including its initial methionine. For a peptide of length `N`, the nucleotide
 start is determined automatically as `50 - 3N`, so the encoded peptide ends at
 position 49. The peptide must begin with `M`; its first codon is fixed to `AUG`.
-It must fit within the 50-nt sequence (`3N <= 50`), and CAI control requires at
-least one downstream residue in addition to the initial methionine (`N >= 2`).
+It must fit within the 50-nt sequence (`3N <= 50`) and contain at least one
+downstream residue in addition to the initial methionine (`N >= 2`), because
+the initiating `AUG` is excluded and sequence CAI would otherwise be undefined.
 For example, an 8-aa peptide starts at position 26 and occupies codon starts
 26, 29, 32, 35, 38, 41, 44, and 47.
 
@@ -197,11 +198,12 @@ python design_utr.py \
   --device cuda:0
 ```
 
-`--cai` is the sampler's requested codon relative-adaptiveness target, not a
-guarantee that every generated sequence will have exactly that CAI. The CLI
-calculates and reports each sequence's achieved CAI after generation. The fixed
-initiating `AUG` is excluded from that calculation, while every downstream
-codon—including downstream methionine or tryptophan—contributes.
+`--cai` controls the requested per-codon relative adaptiveness (α) used by the
+sampler. It is not a target for the generated sequence-level CAI. The CLI
+calculates and reports each sequence's achieved CAI separately after
+generation. The fixed initiating `AUG` is excluded from that calculation,
+while every downstream codon—including downstream methionine or
+tryptophan—contributes.
 
 The manuscript Evaluation 3 layout is the 8-aa case above: 26 nt of UTR,
 followed by `AUG` and seven downstream codons. Benchmark 2 uses a 10-aa peptide,
@@ -215,14 +217,19 @@ adaptiveness 1), the sampler clips that position to the nearest feasible value.
 The CLI prints a warning and records every position's effective value in both
 CAI CSV files instead of silently presenting the requested α as attainable.
 
-Each CAI run writes:
+Every `--cds-amino` run writes the requested FASTA file and achieved-CAI
+outputs, whether or not `--cai` is supplied:
 
-- the requested FASTA file;
-- `*_cai.csv`, with observed sequence-level CAI, effective per-position α, and
-  peptide-preservation checks;
+- `*_cai.csv`, with observed sequence-level CAI and peptide-preservation
+  checks;
 - `*_cai_summary.csv`, with peptide-valid CAI statistics and invalid counts;
   and
-- `*_cai.jpg`, comparing achieved CAI with the specified α value.
+- `*_cai.jpg`, a bar plot of the achieved sequence-level CAI statistics.
+
+When `--cai` is supplied, the CSV files additionally record the requested and
+effective per-position α values, and the CAI plot displays the requested α as
+a separate reference. That reference remains a codon-adaptiveness control
+value, not a sequence-level CAI target.
 
 The codon-usage weighting strength is fixed at `0.04` in
 `src/models/mcml_config.py` for reproducibility.
@@ -242,9 +249,14 @@ python design_utr.py \
   --device cuda:0
 ```
 
-This additionally writes a CSV with predicted MRL/MFE values, an MRL–MFE
-distribution plot, and a wrapped codon-diversity/entropy plot for the complete
-peptide constraint.
+This additionally writes a CSV with predicted MRL/MFE values and a
+`*_dist.jpg` distribution plot. A single MRL or MFE condition is shown as a
+one-dimensional violin plot for that predicted label, with its requested
+target marked on the plot. Joint MRL/MFE conditioning is shown as an MRL–MFE
+scatter plot with the requested two-dimensional target marked in the same
+plane. Unconditional and CAI-only runs also use the MRL–MFE scatter plot, but
+without an MRL/MFE target marker. If a sequence constraint is present, the
+evaluator also writes its corresponding diversity/entropy plot.
 
 ## Main CLI options
 

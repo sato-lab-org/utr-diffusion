@@ -117,15 +117,51 @@ def _plot_args(tmp_path, **overrides):
 
 
 @pytest.mark.parametrize(
+    ("mrl", "mfe", "cai", "label", "target", "expected_condition"),
+    [
+        (8.0, None, None, "MRL", 8.0, "MRL=8"),
+        (None, -20.0, None, "MFE", -20.0, "MFE=-20"),
+        (8.0, None, 0.9, "MRL", 8.0, "MRL=8, CAI-control alpha=0.9"),
+        (None, -20.0, 0.9, "MFE", -20.0, "MFE=-20, CAI-control alpha=0.9"),
+    ],
+)
+def test_read_csv_and_plot_uses_one_dimensional_plot_for_single_label(
+    tmp_path, monkeypatch, mrl, mfe, cai, label, target, expected_condition
+):
+    calls = {}
+    monkeypatch.setattr(
+        visualization,
+        "plot_single_label_distribution",
+        lambda **kwargs: calls.update(kwargs),
+    )
+    monkeypatch.setattr(
+        visualization,
+        "plot_MRL_MFE_scatter",
+        lambda **_: pytest.fail("single-label generation must not use a 2D scatter"),
+    )
+
+    visualization.read_csv_and_plot(
+        _write_plot_input(tmp_path),
+        _plot_args(tmp_path, mrl=mrl, mfe=mfe, cai=cai),
+    )
+
+    assert calls["title"] == (
+        f"{label} Distribution of Generated Sequences (n=2)\n"
+        f"Condition: {expected_condition}"
+    )
+    assert calls["label"] == label
+    assert calls["target"] == target
+    assert "nan" not in calls["title"].lower()
+
+
+@pytest.mark.parametrize(
     ("mrl", "mfe", "cai", "expected_condition"),
     [
-        (8.0, None, None, "MRL=8"),
-        (None, -20.0, None, "MFE=-20"),
         (None, None, None, "unconditional generation"),
         (None, None, 0.9, "CAI-control alpha=0.9"),
     ],
 )
-def test_read_csv_and_plot_omits_missing_conditions_and_target_point(
+def test_read_csv_and_plot_uses_scatter_without_target_when_labels_are_unset(
     tmp_path, monkeypatch, mrl, mfe, cai, expected_condition
 ):
     calls = {}
@@ -141,11 +177,52 @@ def test_read_csv_and_plot_omits_missing_conditions_and_target_point(
     )
 
     assert calls["title"] == (
-        "MRL-MFE Distribution of Generated Sequences(n=2)\n"
+        "MRL-MFE Distribution of Generated Sequences (n=2)\n"
         f"Condition: {expected_condition}"
     )
     assert calls["targets"] == []
-    assert "nan" not in calls["title"].lower()
+
+
+def test_read_csv_and_plot_marks_joint_target_on_scatter(tmp_path, monkeypatch):
+    calls = {}
+    monkeypatch.setattr(
+        visualization,
+        "plot_MRL_MFE_scatter",
+        lambda **kwargs: calls.update(kwargs),
+    )
+
+    visualization.read_csv_and_plot(
+        _write_plot_input(tmp_path),
+        _plot_args(tmp_path, mrl=8.0, mfe=-2.0),
+    )
+
+    assert calls["targets"] == [[8.0, -2.0]]
+    assert calls["title"].endswith("\nCondition: MRL=8, MFE=-2")
+
+
+@pytest.mark.parametrize(
+    ("values", "label", "target"),
+    [
+        ([8.0], "MRL", 8.0),
+        ([8.0, 8.0], "MRL", 8.0),
+        ([-20.0], "MFE", -20.0),
+    ],
+)
+def test_single_label_plot_handles_singleton_and_constant_values(
+    tmp_path, values, label, target
+):
+    output = tmp_path / f"{label.lower()}.jpg"
+
+    visualization.plot_single_label_distribution(
+        values=values,
+        label=label,
+        target=target,
+        savepath=output,
+        title=f"{label} distribution\nCondition: {label}={target:g}",
+    )
+
+    assert output.is_file()
+    assert output.stat().st_size > 0
 
 
 def test_cai_plot_condition_label_includes_alpha_for_cai_only(tmp_path, monkeypatch):
@@ -171,6 +248,33 @@ def test_cai_plot_condition_label_includes_alpha_for_cai_only(tmp_path, monkeypa
     )
 
     assert seen_conditions == [{"cai": 0.9}]
+
+
+def test_cai_bar_plot_without_alpha_has_no_reference_condition(tmp_path, monkeypatch):
+    seen_conditions = []
+    describe_conditions = visualization._describe_conditions
+
+    def capture_conditions(conditions):
+        seen_conditions.append(dict(conditions))
+        return describe_conditions(conditions)
+
+    monkeypatch.setattr(visualization, "_describe_conditions", capture_conditions)
+    output = tmp_path / "cai_without_alpha.jpg"
+    visualization.plot_cai_response(
+        records=[
+            {
+                "target_MRL": 8.0,
+                "target_MFE": float("nan"),
+                "CAI": 0.85,
+                "peptide_valid": True,
+            }
+        ],
+        target_adaptiveness=None,
+        savepath=output,
+    )
+
+    assert seen_conditions == [{"mrl": 8.0}]
+    assert output.is_file()
 
 
 def test_read_csv_and_plot_passes_arbitrary_nucleotide_regions(

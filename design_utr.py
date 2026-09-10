@@ -110,7 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PEPTIDE",
         help=(
             "Complete suffix-filling CDS peptide including the initial M. Its "
-            "0-based start is inferred as 50 - 3 * peptide length."
+            "0-based start is inferred as 50 - 3 * peptide length; achieved "
+            "sequence CAI statistics are reported."
         ),
     )
 
@@ -233,9 +234,7 @@ def parse_nucleotide_constraints(items: list[str]) -> tuple[list[int], list[str]
     return positions, sequences
 
 
-def cds_amino_constraints(
-    peptide: str, *, require_cai: bool = False
-) -> CdsAminoConstraint:
+def cds_amino_constraints(peptide: str) -> CdsAminoConstraint:
     """Validate and position a complete CDS peptide at the sequence suffix."""
 
     normalized = peptide.strip().upper()
@@ -246,8 +245,11 @@ def cds_amino_constraints(
         raise ValueError(f"--cds-amino contains unsupported amino acids: {', '.join(invalid)}")
     if normalized[0] != "M":
         raise ValueError("--cds-amino must begin with M so its first codon is AUG")
-    if require_cai and len(normalized) < 2:
-        raise ValueError("--cai requires at least one downstream amino acid after the initial M")
+    if len(normalized) < 2:
+        raise ValueError(
+            "--cds-amino requires an initial M followed by at least one downstream "
+            "amino acid so sequence CAI is defined"
+        )
     if 3 * len(normalized) > SEQUENCE_LENGTH:
         raise ValueError(
             f"--cds-amino contains {len(normalized)} amino acids but at most "
@@ -297,7 +299,7 @@ def validate_arguments(
     if getattr(args, "amino", None) is not None:
         parse_index_value_pairs(args.amino, "amino")
     if getattr(args, "cds_amino", None) is not None:
-        cds_amino_constraints(args.cds_amino, require_cai=cai is not None)
+        cds_amino_constraints(args.cds_amino)
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -450,10 +452,7 @@ def generate_samples(args: argparse.Namespace, diffusion, target: list[float]):
         repaint.setup(amino_list=amino_acids, pos_list=positions)
         return repaint.p_resample()
 
-    constraint = cds_amino_constraints(
-        args.cds_amino,
-        require_cai=getattr(args, "cai", None) is not None,
-    )
+    constraint = cds_amino_constraints(args.cds_amino)
     repaint_kwargs = {
         "diffusion": diffusion,
         "sample_bs": args.batch_size,
@@ -485,7 +484,7 @@ def planned_output_paths(args: argparse.Namespace) -> list[Path]:
 
     fasta_path = Path(args.out)
     paths = [fasta_path]
-    if getattr(args, "cai", None) is not None:
+    if getattr(args, "cds_amino", None) is not None:
         paths.extend(
             _derived_output_path(fasta_path, suffix)
             for suffix in ("_cai.csv", "_cai_summary.csv", "_cai.jpg")
@@ -531,10 +530,7 @@ def verify_generated_constraints(
         if constraint_kind == "amino":
             positions, expected_values = parse_index_value_pairs(args.amino, "amino")
         else:
-            constraint = cds_amino_constraints(
-                args.cds_amino,
-                require_cai=getattr(args, "cai", None) is not None,
-            )
+            constraint = cds_amino_constraints(args.cds_amino)
             positions = list(constraint.codon_positions)
             expected_values = list(constraint.peptide)
 
@@ -557,38 +553,44 @@ def verify_generated_constraints(
 def add_cai_measurements(
     records: list[dict[str, Any]], args: argparse.Namespace
 ) -> tuple[list[dict[str, Any]], CdsAminoConstraint]:
-    constraint = cds_amino_constraints(args.cds_amino, require_cai=True)
+    constraint = cds_amino_constraints(args.cds_amino)
     positions = list(constraint.codon_positions)
     cai_positions = list(constraint.cai_positions)
     expected_amino_acids = list(constraint.peptide)
     expected_downstream = expected_amino_acids[1:]
-    _, effective_by_amino = build_target_adaptiveness_probability_table(
-        args.cai,
-        return_effective_targets=True,
-    )
-    effective_by_position = [
-        effective_by_amino[amino] for amino in expected_downstream
-    ]
-    effective_description = ";".join(
-        f"{position}:{amino}={effective:.6f}"
-        for position, amino, effective in zip(
-            cai_positions,
-            expected_downstream,
-            effective_by_position,
+    target_adaptiveness = getattr(args, "cai", None)
+    if target_adaptiveness is None:
+        effective_description = ""
+        clipped = []
+        effective_geomean = None
+    else:
+        _, effective_by_amino = build_target_adaptiveness_probability_table(
+            target_adaptiveness,
+            return_effective_targets=True,
         )
-    )
-    clipped = [
-        (position, amino, effective)
-        for position, amino, effective in zip(
-            cai_positions,
-            expected_downstream,
-            effective_by_position,
+        effective_by_position = [
+            effective_by_amino[amino] for amino in expected_downstream
+        ]
+        effective_description = ";".join(
+            f"{position}:{amino}={effective:.6f}"
+            for position, amino, effective in zip(
+                cai_positions,
+                expected_downstream,
+                effective_by_position,
+            )
         )
-        if not math.isclose(effective, args.cai, abs_tol=1e-9)
-    ]
-    effective_geomean = math.exp(
-        statistics.fmean(math.log(value) for value in effective_by_position)
-    )
+        clipped = [
+            (position, amino, effective)
+            for position, amino, effective in zip(
+                cai_positions,
+                expected_downstream,
+                effective_by_position,
+            )
+            if not math.isclose(effective, target_adaptiveness, abs_tol=1e-9)
+        ]
+        effective_geomean = math.exp(
+            statistics.fmean(math.log(value) for value in effective_by_position)
+        )
     for record in records:
         observed = translate_codons(record["Sequence"], positions)
         peptide_valid = observed == expected_amino_acids
@@ -602,7 +604,7 @@ def add_cai_measurements(
             {
                 "cds_amino_start_0based": constraint.start,
                 "cds_amino_length": len(constraint.peptide),
-                "requested_adaptiveness": args.cai,
+                "requested_adaptiveness": target_adaptiveness,
                 "effective_adaptiveness_by_codon": effective_description,
                 "effective_adaptiveness_geomean_reference": effective_geomean,
                 "n_effective_adaptiveness_clipped": len(clipped),
@@ -615,13 +617,13 @@ def add_cai_measurements(
                 "CAI_error": error,
             }
         )
-    if clipped:
+    if target_adaptiveness is not None and clipped:
         details = ", ".join(
             f"position {position} ({amino}) -> {effective:.6f}"
             for position, amino, effective in clipped
         )
         print(
-            f"[CAI warning] requested alpha={args.cai:.6f} is outside "
+            f"[CAI warning] requested alpha={target_adaptiveness:.6f} is outside "
             f"the feasible synonymous-codon range at: {details}"
         )
     return records, constraint
@@ -691,14 +693,25 @@ def write_cai_outputs(
     from src.plot.visualization import plot_cai_response
 
     summary = summary_rows[0]
+    effective_reference = summary["effective_adaptiveness_geomean_reference"]
     plot_cai_response(
         records,
-        args.cai,
+        getattr(args, "cai", None),
         str(plot_path),
-        effective_reference=summary["effective_adaptiveness_geomean_reference"],
+        effective_reference=(
+            effective_reference
+            if effective_reference is not None
+            and math.isfinite(float(effective_reference))
+            else None
+        ),
+    )
+    target_message = (
+        f"requested adaptiveness alpha={args.cai:.4f}; "
+        if getattr(args, "cai", None) is not None
+        else "no adaptiveness alpha specified; "
     )
     print(
-        f"[CAI] target={args.cai:.4f}; "
+        f"[CAI] {target_message}"
         f"peptide-valid achieved={summary['CAI_mean']:.4f} +/- {summary['CAI_std']:.4f}; "
         f"range=[{summary['CAI_min']:.4f}, {summary['CAI_max']:.4f}]"
     )
@@ -765,7 +778,7 @@ def design_utr(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     output_path = Path(args.out)
     write_fasta(records, output_path)
-    if args.cai is not None:
+    if args.cds_amino is not None:
         write_cai_outputs(records, args, output_path)
 
     if args.do_eval:

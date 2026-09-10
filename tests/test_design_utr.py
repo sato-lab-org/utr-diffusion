@@ -190,7 +190,7 @@ class DesignUtrTests(unittest.TestCase):
             )
 
     def test_cds_amino_fills_the_suffix_and_excludes_initial_aug_from_cai(self):
-        constraint = design_utr.cds_amino_constraints("mGkV", require_cai=True)
+        constraint = design_utr.cds_amino_constraints("mGkV")
 
         self.assertEqual(constraint.peptide, "MGKV")
         self.assertEqual(constraint.start, 38)
@@ -199,15 +199,15 @@ class DesignUtrTests(unittest.TestCase):
 
     def test_cds_amino_requires_initial_methionine(self):
         with self.assertRaisesRegex(ValueError, "begin with M|start with M"):
-            design_utr.cds_amino_constraints("AG", require_cai=False)
+            design_utr.cds_amino_constraints("AG")
 
-    def test_cai_requires_at_least_one_downstream_codon(self):
-        with self.assertRaisesRegex(ValueError, "at least 2|downstream"):
-            design_utr.cds_amino_constraints("M", require_cai=True)
+    def test_cds_amino_requires_at_least_one_downstream_codon_for_cai(self):
+        with self.assertRaisesRegex(ValueError, "downstream|CAI"):
+            design_utr.cds_amino_constraints("M")
 
     def test_cds_amino_rejects_a_peptide_that_cannot_fit_in_50_nt(self):
         with self.assertRaisesRegex(ValueError, "50|too long|fit"):
-            design_utr.cds_amino_constraints("M" + "A" * 16, require_cai=False)
+            design_utr.cds_amino_constraints("M" + "A" * 16)
 
     def test_cai_requires_cds_amino_instead_of_sparse_amino(self):
         missing_cds = design_utr.build_parser().parse_args(["--mrl", "8", "--cai", "0.9"])
@@ -309,6 +309,77 @@ class DesignUtrTests(unittest.TestCase):
             measured[0]["effective_adaptiveness_geomean_reference"], 1.0
         )
 
+    def test_cds_without_alpha_still_measures_generated_sequence_cai(self):
+        records = [
+            {
+                "ID": "sequence_0",
+                "Sequence": "A" * 44 + "ATGGGT",
+                "target_MRL": 8.0,
+                "target_MFE": float("nan"),
+                "sample_index": 0,
+            }
+        ]
+        args = Namespace(cds_amino="MG", cai=None)
+
+        measured, constraint = design_utr.add_cai_measurements(records, args)
+
+        self.assertEqual(constraint.cai_positions, (47,))
+        self.assertTrue(measured[0]["peptide_valid"])
+        self.assertTrue(math.isfinite(measured[0]["CAI"]))
+        self.assertIsNone(measured[0]["requested_adaptiveness"])
+        self.assertEqual(measured[0]["effective_adaptiveness_by_codon"], "")
+        self.assertIsNone(measured[0]["effective_adaptiveness_geomean_reference"])
+        self.assertEqual(measured[0]["n_effective_adaptiveness_clipped"], 0)
+
+    def test_cds_without_alpha_plans_cai_detail_summary_and_plot(self):
+        args = self.parse_and_validate(
+            "--mrl",
+            "8",
+            "--cds-amino",
+            "MG",
+            "--out",
+            "design_outputs/demo.fasta",
+        )
+
+        paths = design_utr.planned_output_paths(args)
+
+        self.assertIn(Path("design_outputs/demo_cai.csv"), paths)
+        self.assertIn(Path("design_outputs/demo_cai_summary.csv"), paths)
+        self.assertIn(Path("design_outputs/demo_cai.jpg"), paths)
+
+    def test_cds_without_alpha_writes_cai_outputs_without_fake_reference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "cds.fasta"
+            args = self.parse_and_validate(
+                "--mrl",
+                "8",
+                "--cds-amino",
+                "MG",
+                "--out",
+                str(output),
+            )
+            records = [
+                {
+                    "ID": "sequence_0",
+                    "Sequence": "A" * 44 + "ATGGGT",
+                    "target_MRL": 8.0,
+                    "target_MFE": float("nan"),
+                    "sample_index": 0,
+                }
+            ]
+
+            with patch("src.plot.visualization.plot_cai_response") as plot:
+                detail_path, summary_path, plot_path = design_utr.write_cai_outputs(
+                    records, args, output
+                )
+
+            self.assertTrue(detail_path.is_file())
+            self.assertTrue(summary_path.is_file())
+            self.assertEqual(plot_path, Path(temp_dir) / "cds_cai.jpg")
+            plot.assert_called_once()
+            self.assertIsNone(plot.call_args.args[1])
+            self.assertIsNone(plot.call_args.kwargs["effective_reference"])
+
     def test_summary_cai_statistics_exclude_invalid_peptide_constraints(self):
         records = [
             {
@@ -395,7 +466,7 @@ class DesignUtrTests(unittest.TestCase):
             ("mfe_only", ("--mfe", "-2"), float("nan"), -2.0),
             ("cai_only", (), float("nan"), float("nan")),
         )
-        constraint = design_utr.cds_amino_constraints("MG", require_cai=True)
+        constraint = design_utr.cds_amino_constraints("MG")
         for name, target_tokens, target_mrl, target_mfe in cases:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temp_dir:
                 args = self.parse_and_validate(

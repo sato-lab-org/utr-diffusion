@@ -127,6 +127,33 @@ def _describe_conditions(conditions):
     return ", ".join(parts)
 
 
+def _set_figure_title(fig, title):
+    """Draw a multi-line figure title as separate text objects.
+
+    Positioning the condition line independently keeps it visible above the
+    panels and makes the two-line layout explicit.
+    """
+
+    if title is None or not str(title).strip():
+        return
+    title_lines = str(title).splitlines()
+    fig.suptitle(
+        title_lines[0],
+        fontsize=title_fontsize,
+        y=0.99,
+        va="top",
+    )
+    if len(title_lines) > 1:
+        fig.text(
+            0.5,
+            0.935,
+            "\n".join(title_lines[1:]),
+            ha="center",
+            va="top",
+            fontsize=title_fontsize,
+        )
+
+
 def _as_constraint_tokens(value):
     if value is None:
         return []
@@ -289,7 +316,7 @@ def plot_amino_constraint_tripanel(seqs, amino, amino_pos, savepath=None, title=
     nrows = max(1, math.ceil(n_amino / ncols))
 
     fig = plt.figure(figsize=(figure_size[0], 5.0 + 1.8 * nrows))
-    fig.subplots_adjust(left=0.08, right=0.96, top=0.86, bottom=0.08)
+    fig.subplots_adjust(left=0.08, right=0.96, top=0.82, bottom=0.08)
     # === NEW: 3-row layout: LOGO → PIE → ENTROPY ===
     gs_outer = fig.add_gridspec(
         nrows=3,
@@ -375,8 +402,7 @@ def plot_amino_constraint_tripanel(seqs, amino, amino_pos, savepath=None, title=
     ax_H.set_title('Position-wise Normalized Shannon Entropy', fontsize=tick_fontsize)
 
     # Big Title
-    if title is not None:
-        fig.suptitle(title, fontsize=title_fontsize, y=0.99)
+    _set_figure_title(fig, title)
 
     # === Layout Adjustment ===
     plt.savefig(savepath, dpi=300)
@@ -438,7 +464,7 @@ def plot_codon_constraint_duopanel(
 
     # 3. Figure layout: 2 rows → LOGO + ENTROPY
     fig = plt.figure(figsize=figure_size)
-    fig.subplots_adjust(left=0.08, right=0.99, top=0.86, bottom=0.10)
+    fig.subplots_adjust(left=0.08, right=0.99, top=0.82, bottom=0.10)
 
     gs = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[1.0, 1.0], hspace=0.32)
 
@@ -486,7 +512,7 @@ def plot_codon_constraint_duopanel(
     ax_H.legend(handles=[blue_line, orange_line], fontsize=clabel_fontsize)
     ax_H.set_title('Position-wise Normalized Shannon Entropy', fontsize=tick_fontsize)
 
-    fig.suptitle(title, fontsize=title_fontsize, y=0.99) if title is not None else None
+    _set_figure_title(fig, title)
 
     plt.savefig(savepath, dpi=300)
     print(f"[saved] {savepath}")
@@ -499,14 +525,22 @@ def plot_MRL_MFE_scatter(mrls, mfes, savepath=None, title=None, targets=None):
     plt.scatter([mrls.mean()], [mfes.mean()], s=80, marker='*', label="Mean")
     finite_targets = _finite_target_pairs(targets)
     if finite_targets:
+        target_label = "Target"
+        if len(finite_targets) == 1:
+            target_label = (
+                f"Target (MRL={finite_targets[0][0]:g}, "
+                f"MFE={finite_targets[0][1]:g})"
+            )
         plt.scatter(
             [target[0] for target in finite_targets],
             [target[1] for target in finite_targets],
-            s=70,
-            marker='x',
-            linewidths=2,
-            color='black',
-            label="Targets",
+            s=110,
+            marker='X',
+            linewidths=0.7,
+            color='#D1495B',
+            edgecolors='white',
+            label=target_label,
+            zorder=5,
         )
     plt.xlabel('Predicted MRL', fontsize=label_fontsize)
     plt.ylabel('Predicted MFE', fontsize=label_fontsize)
@@ -524,8 +558,108 @@ def plot_MRL_MFE_scatter(mrls, mfes, savepath=None, title=None, targets=None):
     plt.close()
 
 
-def plot_cai_response(records, target_adaptiveness, savepath, effective_reference=None):
-    """Plot achieved sequence CAI against the specified adaptiveness alpha."""
+def plot_single_label_distribution(
+    values,
+    label,
+    target,
+    savepath=None,
+    title=None,
+):
+    """Plot a one-dimensional continuous-label distribution and its target."""
+
+    finite_values = np.asarray(
+        [float(value) for value in values if np.isfinite(float(value))],
+        dtype=float,
+    )
+    target = float(target)
+    if label not in {"MRL", "MFE"}:
+        raise ValueError("single-label distribution must be MRL or MFE")
+    if not math.isfinite(target):
+        raise ValueError(f"target {label} must be finite")
+
+    fig, ax = plt.subplots(figsize=figure_size)
+    if finite_values.size:
+        if finite_values.size > 1 and not np.allclose(
+            finite_values, finite_values[0]
+        ):
+            violin = ax.violinplot(
+                finite_values,
+                positions=[0.0],
+                widths=0.58,
+                showmeans=False,
+                showmedians=True,
+                showextrema=False,
+            )
+            for body in violin["bodies"]:
+                body.set_facecolor("#4C8DA5")
+                body.set_edgecolor("#2F5968")
+                body.set_alpha(0.72)
+            violin["cmedians"].set_color("white")
+            violin["cmedians"].set_linewidth(2.0)
+
+        offsets = (
+            np.linspace(-0.13, 0.13, finite_values.size)
+            if finite_values.size > 1
+            else np.array([0.0])
+        )
+        ax.scatter(
+            offsets,
+            finite_values,
+            s=16,
+            alpha=0.35,
+            color="#24566A",
+            edgecolors="none",
+            label="Generated",
+            zorder=3,
+        )
+        achieved_mean = float(finite_values.mean())
+        ax.scatter(
+            [0.0],
+            [achieved_mean],
+            s=100,
+            marker="*",
+            color="#F28E2B",
+            label=f"Mean = {achieved_mean:g}",
+            zorder=5,
+        )
+    else:
+        ax.text(
+            0.0,
+            target,
+            f"No finite predicted {label} values",
+            ha="center",
+            va="bottom",
+            fontsize=text_fontsize,
+        )
+
+    ax.axhline(
+        target,
+        color="#D1495B",
+        linestyle="--",
+        linewidth=2.2,
+        label=f"Target {label} = {target:g}",
+        zorder=4,
+    )
+    baseline = (2.0, 9.0) if label == "MRL" else (-30.0, 0.0)
+    ax.set_ylim(*_expanded_axis_limits([*finite_values, target], baseline))
+    ax.set_xlim(-0.5, 0.5)
+    ax.set_xticks([0.0], ["Generated sequences"])
+    ax.set_ylabel(f"Predicted {label}", fontsize=label_fontsize)
+    ax.tick_params(axis="both", labelsize=tick_fontsize)
+    ax.set_title(title, fontsize=title_fontsize)
+    ax.legend(fontsize=legend_fontsize, frameon=True)
+    fig.tight_layout()
+    fig.savefig(savepath, dpi=300)
+    plt.close(fig)
+
+
+def plot_cai_response(
+    records,
+    target_adaptiveness,
+    savepath,
+    effective_reference=None,
+):
+    """Plot the generated CDS sequences' achieved CAI distribution."""
 
     all_data = pd.DataFrame(records).copy()
     all_data["CAI"] = pd.to_numeric(all_data["CAI"], errors="coerce")
@@ -550,13 +684,6 @@ def plot_cai_response(records, target_adaptiveness, savepath, effective_referenc
     else:
         achieved_mean = float(data["CAI"].mean())
         achieved_std = float(data["CAI"].std(ddof=1)) if len(data) > 1 else 0.0
-        grouped = (
-            data.groupby(
-                ["target_MRL", "target_MFE"], sort=False, dropna=False
-            )["CAI"]
-            .mean()
-            .reset_index()
-        )
         ax.bar(
             [0.0],
             [achieved_mean],
@@ -566,65 +693,79 @@ def plot_cai_response(records, target_adaptiveness, savepath, effective_referenc
             alpha=0.88,
             capsize=6,
             edgecolor="white",
-            label="Peptide-valid sequences (mean +/- SD)",
+            label=(
+                f"Peptide-valid CAI: mean={achieved_mean:.4f}, "
+                f"SD={achieved_std:.4f}"
+            ),
             zorder=2,
         )
-        offsets = np.linspace(-0.13, 0.13, len(grouped)) if len(grouped) > 1 else np.array([0.0])
-        colors = plt.get_cmap("tab10")(np.linspace(0, 1, max(len(grouped), 1)))
-        for offset, color, (_, row) in zip(offsets, colors, grouped.iterrows()):
-            group_conditions = {"cai": float(target_adaptiveness)}
-            for name, column in (("mrl", "target_MRL"), ("mfe", "target_MFE")):
-                value = float(row[column])
-                if np.isfinite(value):
-                    group_conditions[name] = value
-            ax.scatter(
-                [offset],
-                [row["CAI"]],
-                s=65,
-                color=color,
-                edgecolor="black",
-                linewidth=0.4,
-                label=_describe_conditions(group_conditions),
-                zorder=4,
-            )
-    ax.scatter(
-        [0.0],
-        [target_adaptiveness],
-        marker="_",
-        s=320,
-        linewidth=2.2,
-        color="black",
-        label="Specified adaptiveness alpha",
-        zorder=5,
-    )
-    if effective_reference is not None and not math.isclose(
-        float(effective_reference), float(target_adaptiveness), abs_tol=1e-9
-    ):
+        offsets = (
+            np.linspace(-0.14, 0.14, len(data))
+            if len(data) > 1
+            else np.array([0.0])
+        )
         ax.scatter(
-            [0.0],
-            [effective_reference],
-            marker="_",
-            s=320,
-            linewidth=2.2,
-            color="#D1495B",
-            label="Geometric mean of feasible per-position alpha values",
-            zorder=5,
+            offsets,
+            data["CAI"].to_numpy(),
+            s=16,
+            alpha=0.35,
+            color="#24566A",
+            edgecolors="none",
+            label="Individual sequence CAI",
+            zorder=3,
         )
 
-    reference_values = [target_adaptiveness]
-    if effective_reference is not None:
-        reference_values.append(effective_reference)
-    y_values = np.concatenate((data["CAI"].to_numpy(), np.asarray(reference_values)))
-    y_low, y_high = float(y_values.min()), float(y_values.max())
-    padding = max((y_high - y_low) * 0.18, 0.025)
-    ax.set_ylim(max(0.0, y_low - padding), min(1.02, y_high + padding))
+    if target_adaptiveness is not None:
+        target_adaptiveness = float(target_adaptiveness)
+        ax.axhline(
+            target_adaptiveness,
+            color="black",
+            linestyle="--",
+            linewidth=2.0,
+            label=(
+                f"Specified codon adaptiveness alpha={target_adaptiveness:g} "
+                "(reference, not a CAI target)"
+            ),
+            zorder=5,
+        )
+    if effective_reference is not None and np.isfinite(float(effective_reference)):
+        effective_reference = float(effective_reference)
+        if target_adaptiveness is None or not math.isclose(
+            effective_reference, target_adaptiveness, abs_tol=1e-9
+        ):
+            ax.axhline(
+                effective_reference,
+                color="#D1495B",
+                linestyle=":",
+                linewidth=2.2,
+                label=(
+                    "Geometric mean of feasible per-position alpha values "
+                    f"= {effective_reference:g}"
+                ),
+                zorder=5,
+            )
+
+    # CAI is bounded by [0, 1].  A bar chart must keep the zero baseline visible
+    # so its height is not visually exaggerated by a truncated y-axis.
+    ax.set_ylim(0.0, 1.02)
     ax.set_xlim(-0.45, 0.45)
-    ax.set_xticks([0.0], [f"alpha = {target_adaptiveness:g}"])
-    ax.set_xlabel("Specified Codon Relative Adaptiveness", fontsize=label_fontsize)
+    ax.set_xticks([0.0], ["Generated sequences"])
     ax.set_ylabel("Generated Sequence CAI", fontsize=label_fontsize)
+
+    conditions = {}
+    for name, column in (("mrl", "target_MRL"), ("mfe", "target_MFE")):
+        if column not in all_data:
+            continue
+        values = pd.to_numeric(all_data[column], errors="coerce")
+        finite = values[np.isfinite(values)]
+        if not finite.empty:
+            conditions[name] = float(finite.iloc[0])
+    if target_adaptiveness is not None:
+        conditions["cai"] = target_adaptiveness
     ax.set_title(
-        "CAI Response to Specified Codon Relative Adaptiveness\n"
-        f"peptide-valid sequences: {len(data)}/{len(all_data)}",
+        f"CAI Distribution of Generated Sequences (n={len(all_data)})\n"
+        f"Condition: {_describe_conditions(conditions)}; "
+        f"peptide-valid={len(data)}/{len(all_data)}",
         fontsize=title_fontsize,
     )
     ax.tick_params(axis="both", labelsize=tick_fontsize)
@@ -637,18 +778,33 @@ def read_csv_and_plot(csv_file, args):
     data = pd.read_csv(csv_file)
     mrls, mfes = data['MRL'].to_numpy(), data['MFE'].to_numpy()
     conditions = _normalise_conditions(args)
-    target_pairs = _scatter_target_pairs(conditions)
     condition_line = f"Condition: {_describe_conditions(conditions)}"
-    plot_MRL_MFE_scatter(
-        mrls=mrls,
-        mfes=mfes,
-        savepath=_derived_plot_path(args.out, '_dist.jpg'),
-        title=(
-            f"MRL-MFE Distribution of Generated Sequences(n={len(data)})\n"
-            f"{condition_line}"
-        ),
-        targets=target_pairs,
-    )
+    conditioned_labels = [name for name in ("mrl", "mfe") if name in conditions]
+    if len(conditioned_labels) == 1:
+        label_key = conditioned_labels[0]
+        label = label_key.upper()
+        values = mrls if label_key == "mrl" else mfes
+        plot_single_label_distribution(
+            values=values,
+            label=label,
+            target=conditions[label_key],
+            savepath=_derived_plot_path(args.out, '_dist.jpg'),
+            title=(
+                f"{label} Distribution of Generated Sequences (n={len(data)})\n"
+                f"{condition_line}"
+            ),
+        )
+    else:
+        plot_MRL_MFE_scatter(
+            mrls=mrls,
+            mfes=mfes,
+            savepath=_derived_plot_path(args.out, '_dist.jpg'),
+            title=(
+                f"MRL-MFE Distribution of Generated Sequences (n={len(data)})\n"
+                f"{condition_line}"
+            ),
+            targets=_scatter_target_pairs(conditions),
+        )
 
     seqs = data['Sequence'].astype(str).tolist()
     nucleotide = _as_constraint_tokens(getattr(args, "nucleotide", None))
@@ -697,9 +853,9 @@ def read_csv_and_plot(csv_file, args):
         peptide = str(cds_amino).strip().upper()
         amino_list = list(peptide)
         amino_start = 50 - 3 * len(amino_list)
-        if not amino_list or amino_start < 0:
+        if len(amino_list) < 2 or amino_start < 0:
             raise ValueError(
-                "--cds-amino must contain 1-16 amino acids for a 50-nt sequence"
+                "--cds-amino must contain 2-16 amino acids for a 50-nt sequence"
             )
         amino_pos = list(range(amino_start, 50, 3))
         plot_amino_constraint_tripanel(
