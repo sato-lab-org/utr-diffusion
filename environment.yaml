@@ -1,27 +1,32 @@
 name: utr-diffusion
 channels:
-  - nodefaults
   - pytorch
   - nvidia
   - conda-forge
   - bioconda
+  - nodefaults
 
 dependencies:
   - python=3.10
+  - pytorch
+  - pytorch-cuda=12.1
+  - torchvision
   - accelerate
-  - matplotlib
   - numpy=1.26
   - pandas
   - scipy
-  - einops
-  - biopython
-  - pytorch
-  - torchvision
-  - pip
+  - scikit-learn
+  - matplotlib
+  - seaborn
   - logomaker
-  - wandb
-  - genomepy
-  - bedtools
+  - biopython
+  - pillow
+  - pyyaml
+  - tqdm
   - viennarna
+  - wandb
+  - pip
   - pip:
+      - tensorflow[and-cuda]
+      - huggingface-hub
       - memory-efficient-attention-pytorch

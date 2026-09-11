@@ -1,7 +1,12 @@
 import numpy as np
 # discrete single label
+mrl_target_values_3 = [4.0, 6.0, 8.0]
+mrl_target_values_5 = [4.0, 5.0, 6.0, 7.0, 8.0]
 mrl_target_values_7 = [3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+mfe_target_values_3 = [-15, -10, -5]
+mfe_target_values_5 = [-15, -12.5, -10, -7.5, -5]
 mfe_target_values_7 = [-30, -15, -12.5, -10, -7.5, -5, 0]
+mrl_target_extreme = [2.0] #[9.0]
 
 
 # continuous single label experiment 2->9

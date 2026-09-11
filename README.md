@@ -4,185 +4,180 @@ Official implementation accompanying the manuscript:
 
 > **UTR-Diffusion: Conditional Diffusion Modeling for Multi-objective and Constrained UTR Design**
 
-UTR-Diffusion is a conditional diffusion framework for controllable 5′ UTR and 5′ UTR–CDS junction sequence generation. The framework supports:
+UTR-Diffusion generates 50-nt 5′ UTR and 5′ UTR–CDS junction sequences. The released masked continuous multi-label (MCML) model supports:
 
-* **Continuous control of translation- and structure-related indicators**
+- unconditional generation;
+- single-label MRL or MFE conditioning;
+- joint MRL–MFE conditioning;
+- exact codon constraints at user-selected nucleotide positions;
+- sparse amino-acid constraints with synonymous-codon flexibility; and
+- CAI-guided generation for a complete amino-acid-constrained CDS suffix.
 
-  * Mean Ribosome Load (MRL)
-  * Minimum Free Energy (MFE)
-* **Multi-objective conditional generation** with joint MRL and MFE targets
-* **Position-specific codon constraints** at user-defined sequence positions
-* **Position-specific amino-acid constraints** while retaining synonymous codon flexibility
-* **Codon-adaptiveness-controlled generation** for regulating codon usage under coding constraints
-
-> **Note:** Implementation support for codon-adaptiveness control is being finalized and will be added in a forthcoming repository update.
-
----
-
-# 🔬 Overview
-
-UTR-Diffusion supports:
-
-- Unconditional generation
-- Continuous conditional generation (MRL, MFE)
-- Constrained generation (codon / amino-acid clamping)
-- Multi-label generation (MRL + MFE)
-- Evaluation pipeline (MRL/MFE prediction)
-
----
-
-# 📦 Installation (Conda)
-
-We recommend installing dependencies via the provided `environment.yaml`.
+## Installation
 
 ```bash
-git clone https://github.com/satolab-isct/utr-diffusion
+git clone https://github.com/sato-lab-org/utr-diffusion.git
 cd utr-diffusion
-
-# create conda environment
 conda env create -f environment.yaml
-
-# activate
 conda activate utr-diffusion
 ```
----
 
-# Pretrained Checkpoints
+The released sampling path was validated with CUDA and FP16. The optional MFE evaluation also requires `RNAfold`, which is installed by the ViennaRNA dependency in `environment.yaml`.
 
-The pretrained UTR-Diffusion model weights are hosted on Hugging Face:
+## Final MCML checkpoint
 
-https://huggingface.co/Satolab-isct/utr-diffusion-checkpoint
-
-You can download the main checkpoint directly:
+The final model is hosted at [chuankai-dai/utr-diffusion-checkpoint](https://huggingface.co/chuankai-dai/utr-diffusion-checkpoint). Download it to the repository-local `checkpoints/` directory:
 
 ```bash
-mkdir -p checkpoints
-wget -O checkpoints/MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_2000epoch.pt \
-  https://huggingface.co/Satolab-isct/utr-diffusion-checkpoint/resolve/main/checkpoints/MRL_MFE_967k_ep_2k_ts_200_beta_0.01_cond_1_uncond_0.2_drop_0.2_lr_1e-4_at_2000epoch.pt
+hf download chuankai-dai/utr-diffusion-checkpoint checkpoints/mcml_epoch_2000.pt --local-dir .
 ```
 
----
+The default path used by `demo.py` is `checkpoints/mcml_epoch_2000.pt`.
 
-# 🚀 Quick Start (CLI)
-## 1) Codon-constrained example
+- Model SHA-256: `7125d9aa94ac67a71801c26364ce9df517a150a2e19b282caf317c835ae73ba0`
+- Bundled evaluation model SHA-256: `b527c4283328dced156eb11f1e8ca748de68c14f8dcdd4079872db1a0b42d828`
 
-Example: generate sequences targeting MRL=4.0, MFE=-20.0 with codon constraints at specific positions
-(codon start positions; e.g., pos 8 means the codon starting at nucleotide 8, covering positions 8–10)
+The 1.38 GB generative checkpoint is intentionally not stored in Git. The small evaluation model at `evaluation/Model/model.pt` is bundled so `--do-eval` works without another model download.
 
-> Note: You can use either `T` or `U` in codons (inputs with `U` will be converted to `T` internally).
+## Quick start
+
+MRL and MFE each accept one target value. They may be used independently, together, or omitted for unconditional generation. For stable interpolation, use targets near the training distribution:
+
+| Label | Training-data range | Recommended demo range |
+| --- | ---: | ---: |
+| MRL | 0 to 12 | 2 to 9 |
+| MFE | -31 to 0 | -30 to 0 |
+
+Unconditional generation:
 
 ```bash
-python design_utr.py \
-  --mode codon \
-  --targets "4.0,-20.0" \
-  --codon 8:CGC 32:UCA \
-  --out outputs/codon_demo.fasta \
-  --device cuda:0
+python demo.py --do-eval --out demo_output/unconditional.fasta
 ```
 
-Output:
-
-outputs/codon_demo.fasta
-
-## 2) Amino-acid-constrained example
-
-Example: generate sequences targeting MRL=8.0, MFE=-2.0 with amino-acid constraints at specific positions
-(amino start positions; e.g., pos 5 means the codon starting at nucleotide 8, covering positions 5–7).
+Single-label MRL or MFE generation:
 
 ```bash
-python design_utr.py \
-  --mode amino \
-  --targets "8.0,-2.0" \
-  --amino 5:R 26:L \
-  --out outputs/amino_demo.fasta \
-  --device cuda:0
+python demo.py --mrl 6 --do-eval --out demo_output/mrl_demo.fasta
+python demo.py --mfe -10 --do-eval --out demo_output/mfe_demo.fasta
 ```
 
-Output:
-
-outputs/amino_demo.fasta
-
-# 📊 Optional: Evaluate generated sequences (MRL/MFE prediction)
-
-Evaluation is bundled directly in this repository.
-The standalone companion repository utr-diffusion-eval is also available, but no separate installation is required for the integrated workflow here.
-
-MFE prediction relies on ViennaRNA. Please make sure `RNAfold` is installed and available in your PATH.
+Joint MRL–MFE generation:
 
 ```bash
-command -v RNAfold
-RNAfold --version
+python demo.py --mrl 6 --mfe -10 --do-eval --out demo_output/mrl_mfe_demo.fasta
 ```
-If these commands work, the following evaluation CLI should run normally.
 
-## 1) Codon-constrained example
+### Exact base constraints
+
+`--base` fixes one or more three-nucleotide codons. Each position is a zero-based nucleotide start; `U` is accepted and normalized to `T`.
 
 ```bash
-python design_utr.py \
-  --mode codon \
-  --targets "5.9,-8.7" \
-  --codon 8:CGC 17:UCC 26:CGA 35:UCA \
-  --out outputs/codon_demo.fasta \
-  --do-eval \
-  --device cuda:0
+python demo.py --mrl 6 --mfe -10 \
+  --base 2:AGC 8:GTG \
+  --do-eval --out demo_output/base_demo.fasta
 ```
 
-### Outputs:
+### Sparse amino-acid constraints
 
-outputs/codon_demo.fasta
+`--amino` constrains amino acids at zero-based nucleotide starts. Positions need not be contiguous or share a reading frame.
 
-outputs/codon_demo.csv — predicted MRL/MFE values
+```bash
+python demo.py --mrl 6 --mfe -10 \
+  --amino 26:M 31:D 37:L \
+  --do-eval --out demo_output/amino_demo.fasta
+```
 
-outputs/codon_demo_dist.jpg — distribution on the MRL–MFE plane
+### CDS amino-acid constraint and CAI guidance
 
-outputs/codon_demo_constraint.jpg — position-wise nucleotide probability and Shannon entropy
+`--cds-amino` describes a complete contiguous coding suffix as `POSITION:AA` entries. It must begin with methionine (`M`), advance in three-nucleotide steps, and fill the suffix through nucleotide 49. `--cai` accepts a codon relative-adaptiveness target in `(0, 1]` and requires `--cds-amino`.
 
-### Example output figures
+```bash
+python demo.py --mrl 6 --mfe -10 --cai 0.7 \
+  --cds-amino 32:M 35:A 38:G 41:L 44:K 47:L \
+  --do-eval --out demo_output/cai_demo.fasta
+```
+
+Only one of `--base`, `--amino`, and `--cds-amino` may be supplied in a run. For CDS outputs, achieved sequence CAI is calculated as the geometric mean of human codon relative adaptiveness over all downstream codons; the initiating AUG is excluded.
+
+## Evaluation and output files
+
+`--do-eval` is opt-in; omitting it generates only the FASTA file. With evaluation enabled, files are written beside the requested FASTA and existing files with the same names are overwritten:
+
+- `NAME.fasta`: generated sequences;
+- `NAME.csv`: predicted MRL/MFE values, plus achieved CAI for CDS-amino runs;
+- `NAME_dist.jpg`: an MRL or MFE violin plot for single-label conditioning, otherwise an MRL–MFE scatter plot;
+- `NAME_constraint.jpg`: sequence-logo, codon-choice, and entropy diagnostics for constrained generation; and
+- `NAME_cai.jpg`: achieved CAI summary for CDS-amino generation.
+
+The complete FASTA, CSV, and figure outputs for all seven demo modes are included in `demo_output/`.
+
+### Unconditional and label-conditioned distributions
 
 <p align="center">
-  <img src="outputs/codon_demo_dist.jpg" width="45%" />
-  <img src="outputs/codon_demo_constraint.jpg" width="45%" />
+  <img src="demo_output/unconditional_dist.jpg" width="48%" alt="Unconditional MRL-MFE distribution" />
+  <img src="demo_output/mrl_demo_dist.jpg" width="48%" alt="MRL-conditioned distribution" />
+</p>
+<p align="center">
+  <img src="demo_output/mfe_demo_dist.jpg" width="48%" alt="MFE-conditioned distribution" />
+  <img src="demo_output/mrl_mfe_demo_dist.jpg" width="48%" alt="Joint MRL-MFE distribution" />
 </p>
 
-
-## 2) Amino-acid-constrained example
-```bash
-python design_utr.py \
-  --mode amino \
-  --targets "7.2,-13.6" \
-  --amino 5:R 14:A 23:L 29:G 44:S \
-  --out outputs/amino_demo.fasta \
-  --do-eval \
-  --device cuda:0
-```
-
-### Outputs:
-
-outputs/amino_demo.fasta
-
-outputs/amino_demo.csv — predicted MRL/MFE values
-
-outputs/amino_demo_dist.jpg — distribution on the MRL–MFE plane
-
-outputs/amino_demo_constraint.jpg — position-wise nucleotide probability and Shannon entropy
-
-### Example output figures
+### Base and amino-acid constraints
 
 <p align="center">
-    <img src="outputs/amino_demo_dist.jpg" width="45%" />
-    <img src="outputs/amino_demo_constraint.jpg" width="45%" />
+  <img src="demo_output/base_demo_dist.jpg" width="48%" alt="Base-constrained MRL-MFE distribution" />
+  <img src="demo_output/base_demo_constraint.jpg" width="48%" alt="Base-constraint diagnostics" />
+</p>
+<p align="center">
+  <img src="demo_output/amino_demo_dist.jpg" width="48%" alt="Amino-constrained MRL-MFE distribution" />
+  <img src="demo_output/amino_demo_constraint.jpg" width="48%" alt="Amino-constraint diagnostics" />
 </p>
 
----
+### CAI-guided CDS generation
 
-## ⚙️ Arguments (Summary)
+<p align="center">
+  <img src="demo_output/cai_demo_dist.jpg" width="32%" alt="CAI-guided MRL-MFE distribution" />
+  <img src="demo_output/cai_demo_constraint.jpg" width="32%" alt="CDS amino-acid constraint diagnostics" />
+  <img src="demo_output/cai_demo_cai.jpg" width="32%" alt="Achieved CAI distribution" />
+</p>
 
-| Argument | Description |
-|--------|-------------|
-| --mode | Generation mode (`codon`, `amino`) |
-| --targets | Target values `"MRL,MFE"` |
-| `--codon` | Codon constraints (e.g., `8:CGC`) |
-| --amino | Amino-acid constraints (e.g., `5:R 26:L`) |
-| --out | Output FASTA file |
-| --device | `cuda:0` or `cpu` |
-| --do-eval | Enable evaluation pipeline |
+## CLI options
+
+| Option | Meaning |
+| --- | --- |
+| `--checkpoint` | MCML checkpoint path; default `checkpoints/mcml_epoch_2000.pt` |
+| `--mrl` | Optional MRL target |
+| `--mfe` | Optional MFE target |
+| `--cai` | Codon relative-adaptiveness target in `(0, 1]`; requires `--cds-amino` |
+| `--base` | One or more exact `POSITION:CODON` constraints |
+| `--amino` | One or more sparse `POSITION:AA` constraints |
+| `--cds-amino` | Complete contiguous suffix as `POSITION:AA` entries |
+| `--out` | Output `.fasta` path; default `demo_output/demo.fasta` |
+| `--batch-size` | Number of sequences; default 100 |
+| `--cond-weight` | Classifier-free guidance weight; default 4.0 |
+| `--do-eval` | Run the bundled evaluator and create plots; false unless specified |
+| `--eval-repo` | Evaluation directory override; default `evaluation` |
+| `--device` | PyTorch device; default `cuda:0` |
+
+Run `python demo.py --help` for the complete interface.
+
+## Training and diagnostic sampling
+
+The final checkpoint was trained by `src/scripts/train_mcml.py` with `UNet_Masked_Continuous_Multi_Labels` and `Diffusion_Masked_Continuous_Multi_Labels`. The training CSV files are not distributed. To reproduce training, place the following files under `data/HEK293/`:
+
+- `real_MRL_pred_MFE_260k.csv`;
+- `real_MRL_pred_MFE_260k_missing_MFE.csv`; and
+- `real_MRL_pred_MFE_260k_missing_MRL.csv`.
+
+Run the entry points as modules from the repository root:
+
+```bash
+python -m src.scripts.train_mcml
+python -m src.scripts.sample_mcml
+```
+
+Training outputs and checkpoints under `outputs/` are intentionally excluded from Git.
+
+## Licensing
+
+This repository does not currently declare a repository-wide license. Bundled and derived third-party components retain their own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before redistribution or commercial use.

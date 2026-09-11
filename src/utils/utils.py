@@ -6,7 +6,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-
+from pathlib import Path
+import shutil
 
 def exists(x):
     return x is not None
@@ -168,9 +169,72 @@ def get_warmup_flatten_cosine_schedule(optimizer, num_training_steps, warmup_rat
     return LambdaLR(optimizer, lr_lambda, last_epoch=-1)
 
 
-def write_to_fasta(sequences, folder_name, epoch, trial_name=None):
+def write_to_fasta(sequences, folder_name, epoch=None, trial_name=None):
     os.makedirs(folder_name, exist_ok=True)
-    filename = f'{trial_name}_epoch_{epoch}.fasta' if trial_name is not None else f'epoch_{epoch}.fasta'
+    if epoch is not None:
+        filename = f'{trial_name}_epoch_{epoch}.fasta' if trial_name is not None else f'epoch_{epoch}.fasta'
+    else:
+        filename = f'{trial_name}.fasta' if trial_name is not None else f'sample.fasta'
     with open(os.path.join(folder_name, filename), 'w') as f:
         for seq in sequences:
             f.write(seq)
+
+
+def collect_fasta_from_subdirs(target_dir):
+
+    target_dir = Path(target_dir)
+
+    for subdir in target_dir.iterdir():
+        if not subdir.is_dir():
+            continue
+
+        fasta_files = list(subdir.glob("*.fasta"))
+
+        if len(fasta_files) != 1:
+            raise ValueError(
+                f"Expected exactly one .fasta file in {subdir}, "
+                f"but found {len(fasta_files)}"
+            )
+
+        fasta_path = fasta_files[0]
+        new_fasta_path = target_dir / f"{subdir.name}.fasta"
+
+        # move and rename
+        shutil.move(str(fasta_path), str(new_fasta_path))
+
+        # remove the now-empty subdirectory
+        shutil.rmtree(subdir)
+
+        print(f"Moved {fasta_path.name} -> {new_fasta_path.name}")
+
+
+def rename_fasta_cond_to_condition_weight(
+        target_dir,
+        old="cond",
+        new="condition_weight",
+        dry_run=False,
+):
+
+    target_dir = Path(target_dir).resolve()
+
+    if not target_dir.exists():
+        raise FileNotFoundError(f"Target dir does not exist: {target_dir}")
+
+    fasta_files = list(target_dir.glob("*.fasta"))
+
+    if len(fasta_files) == 0:
+        print("No .fasta files found.")
+        return
+
+    for fasta in fasta_files:
+        if old not in fasta.name:
+            continue
+
+        new_name = fasta.name.replace(old, new)
+        new_path = fasta.with_name(new_name)
+
+        if dry_run:
+            print(f"[DRY-RUN] {fasta.name} -> {new_name}")
+        else:
+            fasta.rename(new_path)
+            print(f"Renamed: {fasta.name} -> {new_name}")

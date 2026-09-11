@@ -223,7 +223,7 @@ def get_mfe_batch(sequences, rnafold_path: str) -> List[float]:
 
     lines = res.stdout.decode("utf-8").strip().splitlines()
 
-    # RNAfold outputs 2 lines per sequence (unless options change):
+    # RNAfold design_outputs 2 lines per sequence (unless options change):
     # line0: sequence
     # line1: structure ( ... ) (-12.30)
     # So we read line1, line3, line5...

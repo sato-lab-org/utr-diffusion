@@ -62,3 +62,34 @@ def get_codons_for_amino(amino: str) -> list:
 
 def get_amino_for_codon(codon: str) -> str:
     return CODON_TO_AMINO[dna_to_rna(codon)]
+
+
+AA_TO_CODON_USAGE_HUMAN_RNA = {
+    'A': {'GCU': 0.27, 'GCC': 0.40, 'GCA': 0.23, 'GCG': 0.10},
+    'R': {'CGU': 0.08, 'CGC': 0.19, 'CGA': 0.11, 'CGG': 0.21, 'AGA': 0.20, 'AGG': 0.21},
+    'N': {'AAU': 0.47, 'AAC': 0.53},
+    'D': {'GAU': 0.46, 'GAC': 0.54},
+    'C': {'UGU': 0.46, 'UGC': 0.54},
+    'Q': {'CAA': 0.27, 'CAG': 0.73},
+    'E': {'GAA': 0.42, 'GAG': 0.58},
+    'G': {'GGU': 0.16, 'GGC': 0.34, 'GGA': 0.25, 'GGG': 0.25},
+    'H': {'CAU': 0.42, 'CAC': 0.58},
+    'I': {'AUU': 0.36, 'AUC': 0.47, 'AUA': 0.17},
+    'L': {'UUA': 0.07, 'UUG': 0.13, 'CUU': 0.13, 'CUC': 0.20, 'CUA': 0.07, 'CUG': 0.40},
+    'K': {'AAA': 0.43, 'AAG': 0.57},
+    'M': {'AUG': 1.00},
+    'F': {'UUU': 0.46, 'UUC': 0.54},
+    'P': {'CCU': 0.29, 'CCC': 0.32, 'CCA': 0.28, 'CCG': 0.11},
+    'S': {'UCU': 0.18, 'UCC': 0.22, 'UCA': 0.15, 'UCG': 0.06, 'AGU': 0.15, 'AGC': 0.24},
+    'T': {'ACU': 0.24, 'ACC': 0.36, 'ACA': 0.28, 'ACG': 0.12},
+    'W': {'UGG': 1.00},
+    'Y': {'UAU': 0.43, 'UAC': 0.57},
+    'V': {'GUU': 0.18, 'GUC': 0.24, 'GUA': 0.12, 'GUG': 0.46},
+    '*': {'UAA': 0.30, 'UAG': 0.24, 'UGA': 0.46},
+}
+
+def get_natural_CAI_for_amino(amino: str) -> float:
+    codon_usage = AA_TO_CODON_USAGE_HUMAN_RNA[amino]
+    max_usage = max(codon_usage.values())
+    cai = sum(codon_usage[codon]/max_usage for codon in codon_usage)
+    return cai

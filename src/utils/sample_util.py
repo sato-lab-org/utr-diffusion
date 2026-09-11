@@ -1,11 +1,7 @@
 import os
-from typing import Optional
-import ipdb
-
 import numpy as np
 import pandas as pd
 import torch
-from pyparsing import with_class
 from tqdm import tqdm
 import itertools
 from src.utils.utils import convert_to_seq
@@ -82,16 +78,45 @@ def create_sample(
     df_motifs_count_syn = extract_motifs(final_sequences)
     return df_motifs_count_syn
 
-def inference(
+def inference_step(
     diffusion_model,
-    class_num,             # int or list/tuple
+    labels,
+    sample_bs: int,
+    seq_len: int,
     cond_weight: float = 0.0,
-    sample_bs: int = 1000,
-    seq_len: int = 50,
     output_all_steps: bool = False,
-    target_values = None, # for continuous value generation
-    device=None,
-    with_condition=True,
+):
+    if output_all_steps:
+        all_sampled = diffusion_model.sample(
+            classes=labels,
+            shape=(sample_bs, 1, 4, seq_len),
+            cond_weight=cond_weight,
+            output_all_steps=True,
+        )
+        sampled_image = all_sampled[-1]
+        all_sampled = torch.stack(all_sampled, dim=0).squeeze(2)
+        return sampled_image, all_sampled
+
+    sampled_image = diffusion_model.sample(
+        classes=labels,
+        shape=(sample_bs, 1, 4, seq_len),
+        cond_weight=cond_weight,
+        output_all_steps=False,
+    )
+    return sampled_image, None
+
+def inference(
+        diffusion_model,
+        class_num,             # int or list/tuple
+        cond_weight: float = 0.0,
+        sample_bs: int = 1000,
+        seq_len: int = 50,
+        output_all_steps: bool = False,
+        label_names:list[str] = None,
+        target_values = None, # for continuous value generation
+        device=None,
+        with_condition=False,
+        fast_gen=True,
 ):
     if target_values is None: # discrete value
         if isinstance(class_num, int):  # single-label
@@ -119,8 +144,7 @@ def inference(
         else:
             raise ValueError(f"Unsupported class_num type: {type(class_num)}")
     else: # continuous value
-        target_tensor = torch.tensor(target_values, dtype=torch.float32)
-        if target_tensor.ndim == 1: #single label
+        if torch.tensor(target_values, dtype=torch.float32).ndim == 1: #single label
             return inference_continuous_single_label(
                 diffusion_model=diffusion_model,
                 target_values=target_values,
@@ -130,16 +154,39 @@ def inference(
                 output_all_steps=output_all_steps,
                 device=device,
             )
-        else:
-            return inference_continuous_double_label(
-                diffusion_model=diffusion_model,
-                target_values=target_values,
-                cond_weight=cond_weight,
-                sample_bs=sample_bs,
-                seq_len=seq_len,
-                output_all_steps=output_all_steps,
-                device=device,
-            )
+        else: # multi label
+            if fast_gen:
+                return inference_continuous_multi_label_batched(
+                    diffusion_model=diffusion_model,
+                    target_values=target_values,
+                    label_names=label_names,
+                    cond_weight=cond_weight,
+                    target_batch_size=9,
+                    sample_bs=sample_bs,
+                    seq_len=seq_len,
+                    output_all_steps=output_all_steps,
+                    device=device,
+                )
+            else:
+                return inference_continuous_multi_label(
+                        diffusion_model=diffusion_model,
+                        target_values=target_values,
+                        label_names=label_names,
+                        cond_weight=cond_weight,
+                        sample_bs=sample_bs,
+                        seq_len=seq_len,
+                        output_all_steps=output_all_steps,
+                        device=device,
+                    )
+                # return inference_continuous_double_label(
+                #     diffusion_model=diffusion_model,
+                #     target_values=target_values,
+                #     cond_weight=cond_weight,
+                #     sample_bs=sample_bs,
+                #     seq_len=seq_len,
+                #     output_all_steps=output_all_steps,
+                #     device=device,
+                # )
 
 
 def inference_single_label(
@@ -157,12 +204,7 @@ def inference_single_label(
 
     for label in range(1, class_num+1):
         labels = torch.full((sample_bs,),label, dtype=torch.float).to(device) if with_condition else None
-        if output_all_steps:
-            all_sampled_images[label] = diffusion_model.sample(labels, (sample_bs, 1, 4, seq_len), cond_weight, output_all_steps=True)
-            sampled_image = all_sampled_images[label][-1]
-            all_sampled_images[label] = torch.stack(all_sampled_images[label], dim=0).squeeze(2)
-        else:
-            sampled_image = diffusion_model.sample(labels, (sample_bs, 1, 4, seq_len), cond_weight)
+        sampled_image, all_sampled = inference_step(diffusion_model, labels, sample_bs, seq_len, cond_weight, output_all_steps)
 
         for n, x in enumerate(sampled_image):
             seq = [nucleotides[s] for s in torch.argmax(x.squeeze(0), dim=0)]
@@ -191,21 +233,7 @@ def inference_double_label(
     for label_tuple in label_combinations:
         # 构建 label tensor, shape: [sample_bs, num_labels]
         labels = torch.tensor([label_tuple] * sample_bs, dtype=torch.float32).to(device)
-        if output_all_steps:
-            all_sampled = diffusion_model.sample(
-                classes=labels,
-                shape=(sample_bs, 1, 4, seq_len),
-                cond_weight=cond_weight,
-                output_all_steps=True
-            )
-            sampled_image = all_sampled[-1]  # 最后一帧
-            all_sampled_images[str(label_tuple)] = torch.stack(all_sampled, dim=0).squeeze(2)  # [T, B, 4, L]
-        else:
-            sampled_image = diffusion_model.sample(
-                classes=labels,
-                shape=(sample_bs, 1, 4, seq_len),
-                cond_weight=cond_weight
-            )
+        sampled_image, all_sampled = inference_step(diffusion_model, labels, sample_bs, seq_len, cond_weight, output_all_steps)
 
         # decode to sequence
         for n, x in enumerate(sampled_image):
@@ -230,12 +258,7 @@ def inference_continuous_single_label(
 
     for idx, tgt in enumerate(target_values):
         labels = torch.full((sample_bs,),tgt, dtype=torch.float).to(device)
-        if output_all_steps:
-            all_sampled_images[idx] = diffusion_model.sample(labels, (sample_bs, 1, 4, seq_len), cond_weight, output_all_steps=True)
-            sampled_image = all_sampled_images[idx][-1]
-            all_sampled_images[idx] = torch.stack(all_sampled_images[idx], dim=0).squeeze(2)
-        else:
-            sampled_image = diffusion_model.sample(labels, (sample_bs, 1, 4, seq_len), cond_weight)
+        sampled_image, all_sampled = inference_step(diffusion_model, labels, sample_bs, seq_len, cond_weight, output_all_steps)
 
         for n, x in enumerate(sampled_image):
             seq = [nucleotides[s] for s in torch.argmax(x.squeeze(0), dim=0)]
@@ -257,22 +280,188 @@ def inference_continuous_double_label(
     final_sequences = []
     all_sampled_images = {}
 
-    for idx, (mrl, mfe) in enumerate(target_values):
-        labels = torch.tensor([[mrl, mfe]] * sample_bs, dtype=torch.float32).to(device)
-        if output_all_steps:
-            all_sampled_images[idx] = diffusion_model.sample(labels, (sample_bs, 1, 4, seq_len), cond_weight, output_all_steps=True)
-            sampled_image = all_sampled_images[idx][-1]
-            all_sampled_images[idx] = torch.stack(all_sampled_images[idx], dim=0).squeeze(2)
-        else:
-            sampled_image = diffusion_model.sample(labels, (sample_bs, 1, 4, seq_len), cond_weight)
+    for idx, tgt in enumerate(target_values):
+        labels = torch.tensor([tgt] * sample_bs, dtype=torch.float32).to(device)
+        sampled_image, all_sampled = inference_step(diffusion_model, labels, sample_bs, seq_len, cond_weight, output_all_steps)
 
         for n, x in enumerate(sampled_image):
             seq = [nucleotides[s] for s in torch.argmax(x.squeeze(0), dim=0)]
-            header = f">target_MRL_{mrl}_MFE_{mfe}_seq_{n}"
+            header = f">target_MRL{tgt[0]:.1f}_MFE{tgt[1]:.1f}_seq_{n}"
             final_sequences.append(header + "\n" + "".join(seq) + "\n")
 
     return (final_sequences, all_sampled_images) if output_all_steps else final_sequences
 
+def inference_continuous_multi_label(
+        diffusion_model,
+        target_values,
+        label_names=None,
+        cond_weight: float = 0.0,
+        sample_bs: int = 1000,
+        seq_len: int = 50,
+        output_all_steps: bool = False,
+        device=None,
+        header_decimals: int = 2,
+):
+    final_sequences = []
+    all_sampled_images = {}
+
+    for idx, tgt in enumerate(target_values):
+        labels = torch.tensor([tgt] * sample_bs, dtype=torch.float32).to(device)
+        sampled_image, all_sampled = inference_step(diffusion_model, labels, sample_bs, seq_len, cond_weight, output_all_steps)
+
+        for n, x in enumerate(sampled_image):
+            seq = [nucleotides[s] for s in torch.argmax(x.squeeze(0), dim=0)]
+            label_part = "_".join([f"{name}_{val:.{header_decimals}f}" for name, val in zip(label_names, tgt)])
+            header = f">target_{label_part}_seq_{n}"
+            final_sequences.append(header + "\n" + "".join(seq) + "\n")
+
+    return (final_sequences, all_sampled_images) if output_all_steps else final_sequences
+
+import torch
+import numpy as np
+
+
+def inference_continuous_multi_label_batched(
+        diffusion_model,
+        target_values,
+        label_names=None,
+        cond_weight: float = 0.0,
+        sample_bs: int = 100,
+        target_batch_size: int = 10,
+        seq_len: int = 50,
+        output_all_steps: bool = False,
+        device=None,
+        header_decimals: int = 2,
+):
+    """
+    Generate sequences for multiple target conditions in batches.
+
+    Args:
+        diffusion_model:
+            Trained diffusion model.
+        target_values:
+            list[list[float]] / np.ndarray / torch.Tensor
+            Shape: [num_targets, num_labels]
+        label_names:
+            list[str], label names used in FASTA header.
+        cond_weight:
+            Classifier-free guidance weight.
+        sample_bs:
+            Number of sequences generated per target condition.
+        target_batch_size:
+            Number of target conditions processed in one inference call.
+            Actual batch size = sample_bs * target_batch_size.
+        seq_len:
+            Sequence length.
+        output_all_steps:
+            Whether to return all sampled diffusion steps.
+        device:
+            torch device.
+        header_decimals:
+            Decimal digits in FASTA header.
+
+    Returns:
+        final_sequences:
+            list[str], FASTA formatted sequences.
+        all_sampled_images:
+            dict, only returned when output_all_steps=True.
+    """
+
+    if device is None:
+        device = next(diffusion_model.parameters()).device
+
+    if not torch.is_tensor(target_values):
+        target_values = torch.tensor(target_values, dtype=torch.float32)
+
+    target_values = target_values.to(device)
+
+    if target_values.ndim == 1:
+        target_values = target_values.unsqueeze(0)
+
+    num_targets, num_labels = target_values.shape
+
+    if label_names is None:
+        label_names = [f"label{i}" for i in range(num_labels)]
+
+    if len(label_names) != num_labels:
+        raise ValueError(f"len(label_names)={len(label_names)} does not match! num_labels={num_labels}")
+
+    final_sequences = []
+    all_sampled_images = {}
+
+    for start in range(0, num_targets, target_batch_size):
+        end = min(start + target_batch_size, num_targets)
+
+        # [target_batch_size, num_labels]
+        target_batch = target_values[start:end]
+
+        # [target_batch_size, num_labels] -> [target_batch_size * sample_bs, num_labels]
+        labels = target_batch.repeat_interleave(sample_bs, dim=0)
+
+        total_bs = labels.shape[0]
+
+        sampled_image, all_sampled = inference_step(diffusion_model, labels, total_bs, seq_len, cond_weight, output_all_steps,)
+
+        if output_all_steps:
+            all_sampled_images[f"target_batch_{start}_{end}"] = all_sampled
+
+        for global_idx, x in enumerate(sampled_image):
+            local_target_idx = global_idx // sample_bs
+            seq_idx = global_idx % sample_bs
+
+            target_idx = start + local_target_idx
+            tgt = target_values[target_idx].detach().cpu().tolist()
+
+            seq = [nucleotides[s] for s in torch.argmax(x.squeeze(0), dim=0).detach().cpu().tolist()]
+            label_part = "_".join([f"{name}_{val:.{header_decimals}f}" for name, val in zip(label_names, tgt)])
+            header = f">target_{label_part}_seq_{seq_idx}"
+            final_sequences.append(header + "\n" + "".join(seq) + "\n")
+
+    if output_all_steps:
+        return final_sequences, all_sampled_images
+
+    return final_sequences
+
+
+def build_continuous_multilabel_fasta_header(
+    target_values,
+    label_names,
+    seq_idx,
+    prefix="target",
+    decimals=2,
+    label_aliases=None,
+):
+    """
+    Build FASTA header for continuous multi-label generation.
+
+    Example:
+        >target_poly-1.00_prot-1.00_ssrna0.00_mfe2.00_seq_15
+    """
+
+    if label_aliases is None:
+        label_aliases = {}
+
+    if len(target_values) != len(label_names):
+        raise ValueError(
+            f"target_values length ({len(target_values)}) != "
+            f"label_names length ({len(label_names)})"
+        )
+
+    parts = []
+    for label, value in zip(label_names, target_values):
+        short_label = label_aliases.get(label, label)
+        short_label = (
+            short_label
+            .replace(".", "_")
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
+
+        parts.append(f"{short_label}{value:.{decimals}f}")
+
+    condition_str = "_".join(parts)
+
+    return f">{prefix}_{condition_str}_seq_{seq_idx}"
 
 def extract_motifs(sequence_list: list):
     """Extract motifs from a list of sequences"""

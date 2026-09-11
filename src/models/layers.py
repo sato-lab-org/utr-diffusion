@@ -1,8 +1,11 @@
 import math
+from typing import Optional
+
 import torch
 import torch.nn.functional as F
 from einops import rearrange
 from torch import einsum, nn
+
 from src.utils.utils import default, exists, l2norm
 
 
@@ -104,10 +107,10 @@ class Residual(nn.Module):
         return self.fn(x, *args, **kwargs) + x
 
 
-def Upsample(dim: int, dim_out: int | None, is_first): ## modificatio for 50bp seq
+def Upsample(dim: int, dim_out: int | None, is_first, w_scale:float =25/13): ## modificatio for 50bp seq
     if is_first:
         upsample = nn.Sequential(
-        nn.Upsample(scale_factor=(2, 25/13), mode="nearest"),
+        nn.Upsample(scale_factor=(2, w_scale), mode="nearest"),
         nn.Conv2d(dim, default(dim_out, dim), 3, padding=1),
     )
     else:

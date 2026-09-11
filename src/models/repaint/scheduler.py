@@ -14,6 +14,20 @@
 #
 # This repository was forked from https://github.com/openai/guided-diffusion, which is under the MIT license
 
+schedule_jump_params = {
+    'jump_length': 10,  # jump length for each jump
+    'jump_n_sample': 10,  # jump frequency for every n steps
+    'n_sample': 1,
+    't_T': 200
+}
+
+schedule_no_jump_params ={
+    'jump_length': 10,  # jump length for each jump
+    'jump_n_sample': 0,  # jump frequency for every n steps
+    'n_sample': 1,
+    't_T': 200
+}
+
 def get_schedule(t_T, t_0, n_sample, n_steplength, debug=0):
     if n_steplength > 1:
         if not n_sample > 1:

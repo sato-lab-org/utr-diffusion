@@ -1,13 +1,13 @@
 import torch
-from .scheduler import get_schedule_jump
-from tqdm.auto import tqdm
+from einops import rearrange
+from collections import defaultdict
+from scipy.stats import wasserstein_distance
+from torch.backends.opt_einsum import strategy
 
-schedule_jump_params = {
-    'jump_length': 10,  # jump length for each jump
-    'jump_n_sample': 10,  # jump frequency for every n steps
-    'n_sample': 1,
-    't_T': 200
-}
+from .scheduler import get_schedule_jump, schedule_jump_params, schedule_no_jump_params
+from tqdm.auto import tqdm
+from .utils import get_amino_images_for_alter_codons, build_gt_from_image_and_pos
+
 
 # this repaint sampler works for continuous multi-label generation
 class RePaint_Codon_Continuous_Multi_Labels:
@@ -26,37 +26,38 @@ class RePaint_Codon_Continuous_Multi_Labels:
         self.seq_len = seq_len
         self.cond_weight = cond_weight
         self.tgt_labels = tgt_labels
-        self.num_tgt_labels = len(tgt_labels)
+        self.num_joint_class = len(tgt_labels)
+        self.label_dim = 1 if isinstance(self.tgt_labels[0], (float, int)) else len(self.tgt_labels[0])
         self.return_all = return_all
-        self.shape = [sample_bs * self.num_tgt_labels] + [1, 4, seq_len]
+        self.shape = [sample_bs * self.num_joint_class] + [1, 4, seq_len]
         self.skip_frames = skip_frames
 
     @torch.no_grad()
-    def p_resample(self, gt, mask):
+    def p_resample(self, gt, mask, schedule:dict = schedule_jump_params):
         labels = [[mrl, mfe] for mrl, mfe in self.tgt_labels for _ in range(self.sample_bs)]
         labels = torch.tensor(labels, dtype=torch.float, device=self.device)
-        gt = gt.expand(self.sample_bs * self.num_tgt_labels, -1, -1, -1).to(self.device)
-        mask = mask.expand(self.sample_bs * self.num_tgt_labels, -1, -1, -1).to(self.device)
+        gt = gt.expand(self.sample_bs * self.num_joint_class, -1, -1, -1).to(self.device)
+        mask = mask.expand(self.sample_bs * self.num_joint_class, -1, -1, -1).to(self.device)
 
         result = {'samples': [], 'forward_steps': [], 'backward_steps': []}
 
         if self.return_all:
-            for idx, (sample, forward_step, backward_step) in enumerate(self.p_resample_loop(gt, mask, labels)):
+            for idx, (sample, forward_step, backward_step) in enumerate(self.p_resample_loop(gt, mask, labels, schedule)):
                 if idx % self.skip_frames != 0:
                     continue
                 result['samples'].append(sample.detach().cpu().to(torch.float16).numpy())
                 result['forward_steps'].append(forward_step)
                 result['backward_steps'].append(backward_step)
         else:
-            for sample, forward_step, backward_step in self.p_resample_loop(gt, mask, labels):
+            for sample, forward_step, backward_step in self.p_resample_loop(gt, mask, labels, schedule):
                 result = sample.detach().cpu().to(torch.float16).numpy()
         return result
 
-    def p_resample_loop(self, gt, mask, labels):
+    def p_resample_loop(self, gt, mask, labels, schedule:dict = schedule_jump_params):
         backward_step_count = 0
         forward_step_count = 0
 
-        times = get_schedule_jump(**schedule_jump_params)
+        times = get_schedule_jump(**schedule)
         time_pairs = list(zip(times[:-1], times[1:]))
         time_pairs = tqdm(time_pairs)
 
