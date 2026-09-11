@@ -39,7 +39,7 @@ The default path used by `demo.py` is `checkpoints/mcml_epoch_2000.pt`.
 
 The 1.38 GB generative checkpoint is intentionally not stored in Git. The small evaluation model at `evaluation/Model/model.pt` is bundled so `--do-eval` works without another model download.
 
-## Quick start
+## Design examples
 
 MRL and MFE each accept one target value. They may be used independently, together, or omitted for unconditional generation. For stable interpolation, use targets near the training distribution:
 
@@ -48,26 +48,57 @@ MRL and MFE each accept one target value. They may be used independently, togeth
 | MRL | 0 to 12 | 2 to 9 |
 | MFE | -31 to 0 | -30 to 0 |
 
-Unconditional generation:
+### 1. Unconditional generation
+
+Omitting both MRL and MFE samples from the model's unconditional path.
 
 ```bash
 python demo.py --do-eval --out demo_output/unconditional.fasta
 ```
 
-Single-label MRL or MFE generation:
+Result: unconditional MRL–MFE distribution.
+
+<p align="center">
+  <img src="demo_output/unconditional_dist.jpg" width="72%" alt="Unconditional MRL-MFE distribution" />
+</p>
+
+### 2. Single-label MRL generation
 
 ```bash
 python demo.py --mrl 6 --do-eval --out demo_output/mrl_demo.fasta
+```
+
+Result: predicted MRL distribution with the requested MRL target.
+
+<p align="center">
+  <img src="demo_output/mrl_demo_dist.jpg" width="72%" alt="MRL-conditioned distribution" />
+</p>
+
+### 3. Single-label MFE generation
+
+```bash
 python demo.py --mfe -10 --do-eval --out demo_output/mfe_demo.fasta
 ```
 
-Joint MRL–MFE generation:
+Result: predicted MFE distribution with the requested MFE target.
+
+<p align="center">
+  <img src="demo_output/mfe_demo_dist.jpg" width="72%" alt="MFE-conditioned distribution" />
+</p>
+
+### 4. Joint MRL–MFE generation
 
 ```bash
 python demo.py --mrl 6 --mfe -10 --do-eval --out demo_output/mrl_mfe_demo.fasta
 ```
 
-### Exact base constraints
+Result: joint MRL–MFE distribution for the requested label pair.
+
+<p align="center">
+  <img src="demo_output/mrl_mfe_demo_dist.jpg" width="72%" alt="Joint MRL-MFE distribution" />
+</p>
+
+### 5. Base-constrained generation
 
 `--base` fixes one or more three-nucleotide codons. Each position is a zero-based nucleotide start; `U` is accepted and normalized to `T`.
 
@@ -77,7 +108,14 @@ python demo.py --mrl 6 --mfe -10 \
   --do-eval --out demo_output/base_demo.fasta
 ```
 
-### Sparse amino-acid constraints
+Results: the conditional MRL–MFE distribution and base-constraint diagnostics.
+
+<p align="center">
+  <img src="demo_output/base_demo_dist.jpg" width="48%" alt="Base-constrained MRL-MFE distribution" />
+  <img src="demo_output/base_demo_constraint.jpg" width="48%" alt="Base-constraint diagnostics" />
+</p>
+
+### 6. Amino-acid-constrained generation
 
 `--amino` constrains amino acids at zero-based nucleotide starts. Positions need not be contiguous or share a reading frame.
 
@@ -87,7 +125,14 @@ python demo.py --mrl 6 --mfe -10 \
   --do-eval --out demo_output/amino_demo.fasta
 ```
 
-### CDS amino-acid constraint and CAI guidance
+Results: the conditional MRL–MFE distribution and amino-acid constraint diagnostics.
+
+<p align="center">
+  <img src="demo_output/amino_demo_dist.jpg" width="48%" alt="Amino-constrained MRL-MFE distribution" />
+  <img src="demo_output/amino_demo_constraint.jpg" width="48%" alt="Amino-acid constraint diagnostics" />
+</p>
+
+### 7. CAI-guided CDS generation
 
 `--cds-amino` describes a complete contiguous coding suffix as `POSITION:AA` entries. It must begin with methionine (`M`), advance in three-nucleotide steps, and fill the suffix through nucleotide 49. `--cai` accepts a codon relative-adaptiveness target in `(0, 1]` and requires `--cds-amino`.
 
@@ -96,6 +141,14 @@ python demo.py --mrl 6 --mfe -10 --cai 0.7 \
   --cds-amino 32:M 35:A 38:G 41:L 44:K 47:L \
   --do-eval --out demo_output/cai_demo.fasta
 ```
+
+Results: the conditional MRL–MFE distribution, CDS constraint diagnostics, and achieved sequence CAI distribution.
+
+<p align="center">
+  <img src="demo_output/cai_demo_dist.jpg" width="32%" alt="CAI-guided MRL-MFE distribution" />
+  <img src="demo_output/cai_demo_constraint.jpg" width="32%" alt="CDS amino-acid constraint diagnostics" />
+  <img src="demo_output/cai_demo_cai.jpg" width="32%" alt="Achieved CAI distribution" />
+</p>
 
 Only one of `--base`, `--amino`, and `--cds-amino` may be supplied in a run. For CDS outputs, achieved sequence CAI is calculated as the geometric mean of human codon relative adaptiveness over all downstream codons; the initiating AUG is excluded.
 
@@ -110,36 +163,6 @@ Only one of `--base`, `--amino`, and `--cds-amino` may be supplied in a run. For
 - `NAME_cai.jpg`: achieved CAI summary for CDS-amino generation.
 
 The complete FASTA, CSV, and figure outputs for all seven demo modes are included in `demo_output/`.
-
-### Unconditional and label-conditioned distributions
-
-<p align="center">
-  <img src="demo_output/unconditional_dist.jpg" width="48%" alt="Unconditional MRL-MFE distribution" />
-  <img src="demo_output/mrl_demo_dist.jpg" width="48%" alt="MRL-conditioned distribution" />
-</p>
-<p align="center">
-  <img src="demo_output/mfe_demo_dist.jpg" width="48%" alt="MFE-conditioned distribution" />
-  <img src="demo_output/mrl_mfe_demo_dist.jpg" width="48%" alt="Joint MRL-MFE distribution" />
-</p>
-
-### Base and amino-acid constraints
-
-<p align="center">
-  <img src="demo_output/base_demo_dist.jpg" width="48%" alt="Base-constrained MRL-MFE distribution" />
-  <img src="demo_output/base_demo_constraint.jpg" width="48%" alt="Base-constraint diagnostics" />
-</p>
-<p align="center">
-  <img src="demo_output/amino_demo_dist.jpg" width="48%" alt="Amino-constrained MRL-MFE distribution" />
-  <img src="demo_output/amino_demo_constraint.jpg" width="48%" alt="Amino-constraint diagnostics" />
-</p>
-
-### CAI-guided CDS generation
-
-<p align="center">
-  <img src="demo_output/cai_demo_dist.jpg" width="32%" alt="CAI-guided MRL-MFE distribution" />
-  <img src="demo_output/cai_demo_constraint.jpg" width="32%" alt="CDS amino-acid constraint diagnostics" />
-  <img src="demo_output/cai_demo_cai.jpg" width="32%" alt="Achieved CAI distribution" />
-</p>
 
 ## CLI options
 
