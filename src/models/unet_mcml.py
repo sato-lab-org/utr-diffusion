@@ -93,7 +93,7 @@ class UNet_Masked_Continuous_Multi_Labels(nn.Module):
                         block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
                         block_klass(dim_out + dim_in, dim_out, time_emb_dim=time_dim),
                         Residual(PreNorm(dim_out, LinearAttention(dim_out))),
-                        Upsample(dim_out, dim_in, ind==0, w_scale=2) if not is_last else nn.Conv2d(dim_out, dim_in, 3, padding=1),
+                        Upsample(dim_out, dim_in, ind==0, w_scale=25/13) if not is_last else nn.Conv2d(dim_out, dim_in, 3, padding=1),
                     ]
                 )
             )

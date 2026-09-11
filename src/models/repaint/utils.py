@@ -85,12 +85,8 @@ def aminos_to_amino_images(tgt_aminos, with_padding=True):
         all_amino_images.append(amino_image)
     return torch.stack(all_amino_images, dim=0)
 
-
-def amino_images_to_aminos(amino_images: torch.Tensor) -> str:
-    """
-    reverse of aminos_to_amino_images, but we only return the most likely amino acid for each position, without considering the codon degeneracy
-    """
-
+def is_amino_constraint(amino):
+    return amino in AMINO_TO_CODONS
 
 def prepare_amino_context(amino_pattern:dict):
     amino_context_list = []

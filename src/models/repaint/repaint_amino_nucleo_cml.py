@@ -3,11 +3,11 @@ import random
 from einops import rearrange
 from .scheduler import get_schedule_jump, schedule_jump_params
 from tqdm.auto import tqdm
-from .utils import aminos_to_amino_images, build_gt_from_image_and_pos, inf_base2vec, base2vec, build_codon_usage_table_for_specific_CAI
+from .utils import aminos_to_amino_images, build_gt_from_image_and_pos, inf_base2vec, base2vec, build_codon_usage_table_for_specific_CAI, is_amino_constraint
 from .amino_codon_table import AA_TO_CODON_USAGE_HUMAN_RNA, get_codons_for_amino, rna_to_dna
 
 # this repaint sampler works for continuous multi-label generation
-class RePaint_Amino_Continuous_Multi_Labels:
+class RePaint_Amino_Nucleotide_Continuous_Multi_Labels:
     def __init__(self,
                  diffusion,
                  tgt_labels: list,
@@ -32,18 +32,35 @@ class RePaint_Amino_Continuous_Multi_Labels:
         self.strategy = strategy
         self.stop_point = stop_point
         self.skip_frames = skip_frames
-        self.tgt_aminos = None
-        self.pos_list = None
+        self.tgt_constraints = None
+        self.constraint_pos_list = None
         self.gamma_for_usage_frequency = gamma_for_usage_frequency
         self.CAI_usage_table = None # codon usage table to calculate weights for usage_weighted_distance, when user want to generate seq with specific CAI
         self.gt_image = None # Do we need to establish a space for gt_image like torch.zero(self.shape)
         self.mask = None # torch.zero(self.shape)
         self.batch_labels = None
         self.all_amino_images = None
+        self.tgt_aminos = []
+        self.amino_pos_list = []
+        self.fixed_nucleotide_constraints = []
 
-    def setup(self, amino_list: list[str], pos_list: list[int], adaptiveness:int = None):
-        self.tgt_aminos = amino_list
-        self.pos_list = pos_list
+
+    def setup(self, constraint_list: list[str], pos_list: list[int], adaptiveness:float = None):
+        self.tgt_constraints = constraint_list
+        self.constraint_pos_list = pos_list
+        self.tgt_aminos = []
+        self.amino_pos_list = []
+        self.fixed_nucleotide_constraints = []
+
+        for constraint, pos in zip(constraint_list, pos_list):
+            if is_amino_constraint(constraint):
+                self.tgt_aminos.append(constraint)
+                self.amino_pos_list.append(pos)
+            else:
+                self.fixed_nucleotide_constraints.append({
+                    'sequence': constraint,
+                    'pos': pos,
+                })
         self._build_gt_mask_from_aminos()
 
         labels = [joint_label for joint_label in self.tgt_labels for _ in range(self.sample_bs)]
@@ -51,16 +68,26 @@ class RePaint_Amino_Continuous_Multi_Labels:
         self.all_amino_images = aminos_to_amino_images(self.tgt_aminos, with_padding=True).to(self.device)
 
         if self.strategy == 'init_usage': #initilization base on codon usage frequency
-            codon_usage_images = get_amino_images_by_codon_usage(
-                tgt_aminos=self.tgt_aminos,
-                sample_size=self.sample_bs * self.num_joint_class,
-                device=self.device,
-            )
-            self.gt_image = build_gt_from_image_and_pos(
-                codon_images=codon_usage_images,
-                pos_list=self.pos_list,
-                device=self.device,
-            )
+            if self.strategy == 'init_usage':
+                codon_usage_images = get_amino_images_by_codon_usage(
+                    tgt_aminos=self.tgt_aminos,
+                    sample_size=self.sample_bs * self.num_joint_class,
+                    device=self.device,
+                )
+
+                amino_pos_tensor = torch.as_tensor(
+                    self.amino_pos_list,
+                    dtype=torch.long,
+                    device=self.device,
+                )
+                amino_index = (
+                        amino_pos_tensor[:, None]
+                        + torch.arange(3, device=self.device)
+                ).reshape(-1)
+
+                codon_usage_region = rearrange(codon_usage_images,'b n h p -> b h (n p)',)
+                self.gt_image[:, 0, :, amino_index] = codon_usage_region
+
         if self.strategy == 'specific_adaptiveness' and adaptiveness is not None:
             self.CAI_usage_table = build_codon_usage_table_for_specific_CAI(
                 amino_to_codons=AA_TO_CODON_USAGE_HUMAN_RNA,
@@ -73,21 +100,29 @@ class RePaint_Amino_Continuous_Multi_Labels:
         batch_size = self.sample_bs * self.num_joint_class
         seqs = [['N'] * self.seq_len for _ in range(batch_size)]
         mask = torch.zeros(self.shape, dtype=torch.float)
+        prev_end = 0
 
-        prev_pos, amino_length = -3, 3
-        for amino, pos in zip(self.tgt_aminos, self.pos_list):
-            if prev_pos + amino_length > pos:
-                raise ValueError("aminos overlap.")
+        for constraint, pos in zip(self.tgt_constraints, self.constraint_pos_list):
+            if is_amino_constraint(constraint):
+                constraint_length = 3
+                alter_codons = get_codons_for_amino(constraint)
 
-            alter_codons = get_codons_for_amino(amino)
+                # batch-wise random codon initialization
+                selected_codons = random.choices(alter_codons, k=batch_size)
+                constraint_sequences = selected_codons
+            else:
+                fixed_sequence = rna_to_dna(constraint)
+                constraint_length = len(fixed_sequence)
+                constraint_sequences = [fixed_sequence for _ in range(batch_size)]
 
-            # batch-wise random codon initialization
-            selected_codons = random.choices(alter_codons, k=batch_size)
-            for b, codon in enumerate(selected_codons):
-                seqs[b][pos:pos + amino_length] = list(codon)
+            if pos < prev_end:
+                raise ValueError(f'Constraints overlap around position {pos}.')
 
-            mask[:, :, :, pos:pos + amino_length] = 1.0
-            prev_pos = pos
+            for batch_idx, sequence in enumerate(constraint_sequences):
+                seqs[batch_idx][pos:pos + constraint_length] = list(sequence)
+
+            mask[:, :, :, pos:pos + constraint_length] = 1.0
+            prev_end = pos + constraint_length
 
         images = []
         for seq in seqs:
@@ -104,7 +139,7 @@ class RePaint_Amino_Continuous_Multi_Labels:
         result = {'samples': [], 'forward_steps': [], 'backward_steps': []}
         if self.return_all:
             for idx, (sample, forward_step, backward_step) in enumerate(
-                    self.p_resample_loop(self.gt_image, self.mask, self.batch_labels, self.all_amino_images, self.pos_list)):
+                    self.p_resample_loop(self.gt_image, self.mask, self.batch_labels, self.all_amino_images, self.amino_pos_list)):
                 if idx % self.skip_frames != 0:
                     continue
                 result['samples'].append(sample.detach().cpu().to(torch.float16).numpy())
@@ -112,7 +147,7 @@ class RePaint_Amino_Continuous_Multi_Labels:
                 result['backward_steps'].append(backward_step)
 
         else:
-            for sample, forward_step, backward_step in self.p_resample_loop(self.gt_image, self.mask, self.batch_labels, self.all_amino_images, self.pos_list):
+            for sample, forward_step, backward_step in self.p_resample_loop(self.gt_image, self.mask, self.batch_labels, self.all_amino_images, self.amino_pos_list):
                 result = sample.detach().cpu().to(torch.float16).numpy()
 
         return result
@@ -146,14 +181,7 @@ class RePaint_Amino_Continuous_Multi_Labels:
                 mixed_image = gt_noised * mask + image * (1 - mask)
                 timesteps = torch.full((n_sample,), t_last, dtype=torch.long, device=self.device)
                 with torch.no_grad():
-                    image = self.model.p_sample_guided(
-                        x=mixed_image,
-                        t=timesteps,
-                        classes=labels,
-                        cond_weight=self.cond_weight,
-                        context_mask=context_mask,
-                        t_index=t_last
-                    )
+                    image = self.model.p_sample_guided(mixed_image, labels, timesteps, t_last, context_mask, self.cond_weight)
             else:
                 forward_step_count += 1
                 image = self.noise_step(x_t_m1=image, t=t_last)
@@ -176,14 +204,30 @@ class RePaint_Amino_Continuous_Multi_Labels:
 
         if self.strategy in ['init_random', 'init_usage', 'init_random_fixed']:
             return gt
-        # mask, image [B, 1, C, L]
-        mask_1d = mask[0, 0, 0, :]
-        index = mask_1d.nonzero(as_tuple=False).flatten()
-        fix_region = image[:, :, :, index]  # [B, 1, 4, 50] -> [B, 1, 4, 3 * N]
 
-        new_codon_images = choose_codon_by_strategy(fix_region, all_amino_images, self.tgt_aminos, self.strategy, self.gamma_for_usage_frequency, self.CAI_usage_table)  # [B, N, 6]
-        gt_image = build_gt_from_image_and_pos(codon_images=new_codon_images, pos_list=amino_pos, device=self.device)
+        amino_pos_tensor = torch.as_tensor(amino_pos, dtype=torch.long, device=self.device)
+        amino_index = (amino_pos_tensor[:, None] + torch.arange(3, device=self.device)).reshape(-1)
+        # Extract only amino-constrained positions.
+        # Fixed nucleotide constraints such as UG are excluded.
+        #
+        # [B, 1, 4, L]
+        # ->
+        # [B, 1, 4, 3N]
+        amino_specified_region = image[:, :, :, amino_index]  # [B, 1, 4, 3N])
 
+        new_codon_images = choose_codon_by_strategy(
+            query=amino_specified_region,
+            candidates=all_amino_images,
+            tgt_aminos=self.tgt_aminos,
+            strategy=self.strategy,
+            gamma=self.gamma_for_usage_frequency,
+            CAI_usage_table=self.CAI_usage_table,
+        )  # [B, N, 6]
+
+        selected_amino_region = (new_codon_images.permute(0, 2, 1, 3).reshape(new_codon_images.shape[0], 4, -1))
+        gt_image = gt.clone()
+        scatter_index = amino_index.view(1, 1, -1).expand(gt_image.shape[0], 4, -1,)
+        gt_image[:, 0].scatter_(dim=-1, index=scatter_index, src=selected_amino_region,)
         return gt_image
 
 

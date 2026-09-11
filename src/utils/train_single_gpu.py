@@ -167,11 +167,6 @@ class TrainLoop_single_gpu(BasicTrainLoop):
                 self._save_fasta(sequences=seqs, folder_name='samples', trial_name=trial_name)
 
 
-    
-    def load_checkpoint_then_do_sample(self, checkpoint_path, trial_name=None, sample_bs:int=1000):
+    def load_checkpoint_then_do_sample(self, checkpoint_path, trial_name=None, sample_bs:int=100):
         self.load_checkpoint(checkpoint_path)
         self.sample_offline(trial_name=trial_name,  sample_bs=sample_bs)
-        
-
-
-

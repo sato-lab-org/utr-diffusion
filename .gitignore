@@ -3,9 +3,10 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-*.pytest_cache/
+.pytest_cache/
+/.cache/huggingface/
 
-# --- Virtual / local env directories ---
+# --- Virtual / local environments ---
 env/
 .venv/
 venv/
@@ -21,43 +22,42 @@ conda_env/
 # --- Jupyter ---
 .ipynb_checkpoints/
 
-# --- Data & experiment artifacts (大文件) ---
-data/
-datasets/
-outputs/
-checkpoints/
-runs/
-logs/
-save/
-extension_save/
-repaint_save/
-wandb/
-torch/
-src_backup_*/
+# --- Repository-local data and generated artifacts ---
+/data/
+/datasets/
+/outputs/
+/design_outputs/
+/checkpoints/
+/runs/
+/logs/
+/save/
+/extension_save/
+/repaint_save/
+/wandb/
+/torch/
+/src_backup_*/
 
 # --- Logs ---
 *.log
 
-# --- Model / large binary files ---
+# --- Model and large binary files ---
 *.pt
 *.pth
 *.ckpt
 *.h5
 *.npz
 *.pkl
+*.safetensors
+!/evaluation/Model/model.pt
+
+# --- Local TSUBAME state and backups ---
+/.tsubame.json
+/.tsubame/
+/evaluation/rna.ps
+/save_checkpoints_backup.tar.gz
+*.bak
+*.bak_*
 
 # --- OS junk ---
 .DS_Store
 Thumbs.db
-*.safetensors
-design_utr/
-
-# --- Local TSUBAME control state ---
-.tsubame.json
-.tsubame/state/
-.tsubame/logs/
-.idea/tsubame-private/
-
-# --- Known TSUBAME-only generated artifacts ---
-evaluation/rna.ps
-save_checkpoints_backup.tar.gz

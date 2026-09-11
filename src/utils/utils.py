@@ -238,4 +238,3 @@ def rename_fasta_cond_to_condition_weight(
         else:
             fasta.rename(new_path)
             print(f"Renamed: {fasta.name} -> {new_name}")
-
